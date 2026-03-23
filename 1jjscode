@@ -7,47 +7,42 @@ local localPlayer = Players.LocalPlayer
 local guiParent = (localPlayer and localPlayer:FindFirstChild("PlayerGui")) or CoreGui
 
 if not guiParent then
-	warn("Could not find suitable GUI parent.")
+	warn("Could not find suitable GUI parent. Tracker UI might not be visible.")
 	return
 end
 
 --// =========================
---// SETTINGS
+--// CONFIG
 --// =========================
 local Settings = {
-	PanelSize = UDim2.new(0, 270, 0, 198),
-	PanelPosition = UDim2.new(0, 35, 0.5, -99),
+	PanelSize = UDim2.new(0, 250, 0, 185),
+	PanelPosition = UDim2.new(0, 35, 0.5, -95),
 
-	-- These are the usernames you want to PROTECT/WATCH.
-	-- When one of these users gets hit, the script will try to find the attacker
-	-- and show the ATTACKER'S cooldowns.
+	-- Only these usernames count as victims to watch.
 	ValidUsers = {
 		["cd3u"] = true,
 		["Anuribus"] = true,
 		["afa67512"] = true,
 	},
 
-	ActiveDisplaySeconds = 10,
-	RecentAttackWindow = 1.1,
-	MaxAttackDistance = 8, -- set to 5 if you want it stricter
+	-- Tight attacker check near the valid victim.
+	MaxAttackDistance = 5,
+	RecentAttackWindow = 1.35,
+	ActiveDisplaySeconds = 8,
 	MaxVisibleMoves = 6,
 
-	WindowColor = Color3.fromRGB(18, 22, 30),
-	TopbarColor = Color3.fromRGB(23, 28, 38),
-	CardColor = Color3.fromRGB(28, 34, 45),
-	OutlineColor = Color3.fromRGB(78, 92, 114),
+	CooldownFillColor = Color3.fromRGB(255, 70, 70),
+	CooldownBackgroundColor = Color3.fromRGB(35, 35, 35),
+	PanelBackgroundColor = Color3.fromRGB(20, 20, 20),
+	PanelOutlineColor = Color3.fromRGB(0, 0, 0),
+	TitleBarColor = Color3.fromRGB(28, 28, 28),
+	TitleColor = Color3.fromRGB(255, 255, 255),
+	TextColor = Color3.fromRGB(235, 235, 235),
+	MutedTextColor = Color3.fromRGB(160, 160, 160),
+	AccentColor = Color3.fromRGB(120, 180, 255),
 
-	TextColor = Color3.fromRGB(235, 240, 248),
-	SubTextColor = Color3.fromRGB(156, 170, 191),
-	AccentColor = Color3.fromRGB(118, 175, 255),
-
-	BarBackColor = Color3.fromRGB(17, 22, 30),
-	BarFillColor = Color3.fromRGB(92, 148, 255),
-
-	WindowTransparency = 0.18,
-	TopbarTransparency = 0.08,
-	CardTransparency = 0.12,
-	ShadowTransparency = 0.58,
+	BarHeight = 20,
+	BarSpacing = 4,
 }
 
 --// =========================
@@ -61,201 +56,117 @@ end
 --// =========================
 --// STATE
 --// =========================
-local MoveStates = {}            -- [character] = { [moveName] = {LastUse, TimeStarted} }
+local MoveStates = {}            -- [character] = { [moveName] = { LastUse = 0, TimeStarted = 0 } }
 local CharacterSnapshots = {}    -- [character] = snapshot
-local HumanoidConnections = {}   -- [humanoid] = RBXScriptConnection
-local LastHealthByHumanoid = {}  -- [humanoid] = last health number
+local HumanoidConnections = {}   -- [humanoid] = connection
+local LastHealthByHumanoid = {}  -- [humanoid] = health
 
-local ActiveAttacker = nil
-local ActiveVictim = nil
+local ActiveTarget = nil         -- attacker
+local ActiveVictim = nil         -- valid user who got hit
 local ActiveUntil = 0
-local LastReason = "Waiting for a valid user to be attacked..."
+local LastCombatReason = "Waiting for a valid user to be attacked..."
 
 --// =========================
---// GUI
+--// GUI SETUP
 --// =========================
 local mainGui = Instance.new("ScreenGui")
 mainGui.Name = "CooldownTracker_GUI"
 mainGui.ResetOnSpawn = false
 mainGui.IgnoreGuiInset = true
-mainGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 mainGui.Parent = guiParent
-
-local shadow = Instance.new("Frame")
-shadow.Name = "Shadow"
-shadow.Size = UDim2.new(0, 282, 0, 210)
-shadow.Position = Settings.PanelPosition + UDim2.new(0, 0, 0, 4)
-shadow.BackgroundColor3 = Color3.new(0, 0, 0)
-shadow.BackgroundTransparency = Settings.ShadowTransparency
-shadow.BorderSizePixel = 0
-shadow.ZIndex = 0
-shadow.Parent = mainGui
-
-local shadowCorner = Instance.new("UICorner")
-shadowCorner.CornerRadius = UDim.new(0, 12)
-shadowCorner.Parent = shadow
 
 local panel = Instance.new("Frame")
 panel.Name = "TrackerPanel"
 panel.Size = Settings.PanelSize
 panel.Position = Settings.PanelPosition
-panel.BackgroundColor3 = Settings.WindowColor
-panel.BackgroundTransparency = Settings.WindowTransparency
-panel.BorderSizePixel = 0
+panel.BackgroundColor3 = Settings.PanelBackgroundColor
+panel.BorderSizePixel = 1
+panel.BorderColor3 = Settings.PanelOutlineColor
 panel.Active = true
-panel.ZIndex = 2
 panel.Parent = mainGui
 
 local panelCorner = Instance.new("UICorner")
-panelCorner.CornerRadius = UDim.new(0, 12)
+panelCorner.CornerRadius = UDim.new(0, 8)
 panelCorner.Parent = panel
 
 local panelStroke = Instance.new("UIStroke")
-panelStroke.Color = Settings.OutlineColor
+panelStroke.Color = Settings.PanelOutlineColor
 panelStroke.Thickness = 1
-panelStroke.Transparency = 0.22
 panelStroke.Parent = panel
 
-local topbar = Instance.new("Frame")
-topbar.Name = "Topbar"
-topbar.Size = UDim2.new(1, 0, 0, 30)
-topbar.BackgroundColor3 = Settings.TopbarColor
-topbar.BackgroundTransparency = Settings.TopbarTransparency
-topbar.BorderSizePixel = 0
-topbar.Active = true
-topbar.ZIndex = 3
-topbar.Parent = panel
+local titleBar = Instance.new("Frame")
+titleBar.Name = "TitleBar"
+titleBar.Size = UDim2.new(1, 0, 0, 28)
+titleBar.BackgroundColor3 = Settings.TitleBarColor
+titleBar.BorderSizePixel = 0
+titleBar.Active = true
+titleBar.Parent = panel
 
-local topbarCorner = Instance.new("UICorner")
-topbarCorner.CornerRadius = UDim.new(0, 12)
-topbarCorner.Parent = topbar
+local titleCorner = Instance.new("UICorner")
+titleCorner.CornerRadius = UDim.new(0, 8)
+titleCorner.Parent = titleBar
 
-local topbarFill = Instance.new("Frame")
-topbarFill.BackgroundColor3 = Settings.TopbarColor
-topbarFill.BackgroundTransparency = Settings.TopbarTransparency
-topbarFill.BorderSizePixel = 0
-topbarFill.Position = UDim2.new(0, 0, 0, 12)
-topbarFill.Size = UDim2.new(1, 0, 0, 18)
-topbarFill.ZIndex = 3
-topbarFill.Parent = topbar
-
-local dotHolder = Instance.new("Frame")
-dotHolder.BackgroundTransparency = 1
-dotHolder.Size = UDim2.new(0, 46, 0, 12)
-dotHolder.Position = UDim2.new(0, 10, 0, 9)
-dotHolder.ZIndex = 4
-dotHolder.Parent = topbar
-
-local dotLayout = Instance.new("UIListLayout")
-dotLayout.FillDirection = Enum.FillDirection.Horizontal
-dotLayout.Padding = UDim.new(0, 5)
-dotLayout.Parent = dotHolder
-
-local function makeDot(color)
-	local dot = Instance.new("Frame")
-	dot.Size = UDim2.new(0, 10, 0, 10)
-	dot.BackgroundColor3 = color
-	dot.BorderSizePixel = 0
-	dot.ZIndex = 4
-	dot.Parent = dotHolder
-
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(1, 0)
-	corner.Parent = dot
-end
-
-makeDot(Color3.fromRGB(255, 95, 87))
-makeDot(Color3.fromRGB(255, 189, 46))
-makeDot(Color3.fromRGB(40, 205, 65))
+local titleMask = Instance.new("Frame")
+titleMask.BackgroundColor3 = Settings.TitleBarColor
+titleMask.BorderSizePixel = 0
+titleMask.Position = UDim2.new(0, 0, 0.5, 0)
+titleMask.Size = UDim2.new(1, 0, 0.5, 0)
+titleMask.Parent = titleBar
 
 local titleLabel = Instance.new("TextLabel")
 titleLabel.BackgroundTransparency = 1
-titleLabel.Size = UDim2.new(1, -90, 1, 0)
-titleLabel.Position = UDim2.new(0, 45, 0, 0)
+titleLabel.Size = UDim2.new(1, -10, 1, 0)
+titleLabel.Position = UDim2.new(0, 10, 0, 0)
 titleLabel.Text = "Cooldown Tracker"
-titleLabel.TextColor3 = Settings.TextColor
-titleLabel.TextSize = 15
-titleLabel.Font = Enum.Font.GothamSemibold
-titleLabel.TextXAlignment = Enum.TextXAlignment.Center
-titleLabel.ZIndex = 4
-titleLabel.Parent = topbar
+titleLabel.TextColor3 = Settings.TitleColor
+titleLabel.TextSize = 16
+titleLabel.Font = Enum.Font.Code
+titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+titleLabel.Parent = titleBar
 
 local content = Instance.new("Frame")
 content.Name = "Content"
 content.BackgroundTransparency = 1
-content.Position = UDim2.new(0, 8, 0, 38)
-content.Size = UDim2.new(1, -16, 1, -46)
-content.ZIndex = 3
+content.Position = UDim2.new(0, 8, 0, 34)
+content.Size = UDim2.new(1, -16, 1, -42)
 content.Parent = panel
 
-local infoCard = Instance.new("Frame")
-infoCard.Name = "InfoCard"
-infoCard.Size = UDim2.new(1, 0, 0, 58)
-infoCard.BackgroundColor3 = Settings.CardColor
-infoCard.BackgroundTransparency = Settings.CardTransparency
-infoCard.BorderSizePixel = 0
-infoCard.ZIndex = 3
-infoCard.Parent = content
-
-local infoCorner = Instance.new("UICorner")
-infoCorner.CornerRadius = UDim.new(0, 10)
-infoCorner.Parent = infoCard
-
-local infoStroke = Instance.new("UIStroke")
-infoStroke.Color = Settings.OutlineColor
-infoStroke.Thickness = 1
-infoStroke.Transparency = 0.40
-infoStroke.Parent = infoCard
-
 local statusLabel = Instance.new("TextLabel")
+statusLabel.Name = "Status"
 statusLabel.BackgroundTransparency = 1
-statusLabel.Position = UDim2.new(0, 10, 0, 6)
-statusLabel.Size = UDim2.new(1, -20, 0, 16)
-statusLabel.Text = LastReason
-statusLabel.TextColor3 = Settings.SubTextColor
-statusLabel.TextSize = 12
-statusLabel.Font = Enum.Font.GothamMedium
+statusLabel.Size = UDim2.new(1, 0, 0, 18)
+statusLabel.Position = UDim2.new(0, 0, 0, 0)
+statusLabel.Text = "Waiting for a valid user to be attacked..."
+statusLabel.TextColor3 = Settings.MutedTextColor
+statusLabel.TextSize = 13
+statusLabel.Font = Enum.Font.Code
 statusLabel.TextXAlignment = Enum.TextXAlignment.Left
-statusLabel.ZIndex = 4
-statusLabel.Parent = infoCard
+statusLabel.Parent = content
 
-local attackerLabel = Instance.new("TextLabel")
-attackerLabel.BackgroundTransparency = 1
-attackerLabel.Position = UDim2.new(0, 10, 0, 23)
-attackerLabel.Size = UDim2.new(1, -20, 0, 16)
-attackerLabel.Text = "Attacker: -"
-attackerLabel.TextColor3 = Settings.AccentColor
-attackerLabel.TextSize = 13
-attackerLabel.Font = Enum.Font.GothamSemibold
-attackerLabel.TextXAlignment = Enum.TextXAlignment.Left
-attackerLabel.ZIndex = 4
-attackerLabel.Parent = infoCard
-
-local victimLabel = Instance.new("TextLabel")
-victimLabel.BackgroundTransparency = 1
-victimLabel.Position = UDim2.new(0, 10, 0, 40)
-victimLabel.Size = UDim2.new(1, -20, 0, 14)
-victimLabel.Text = "Victim: -"
-victimLabel.TextColor3 = Settings.SubTextColor
-victimLabel.TextSize = 12
-victimLabel.Font = Enum.Font.GothamMedium
-victimLabel.TextXAlignment = Enum.TextXAlignment.Left
-victimLabel.ZIndex = 4
-victimLabel.Parent = infoCard
+local targetLabel = Instance.new("TextLabel")
+targetLabel.Name = "Target"
+targetLabel.BackgroundTransparency = 1
+targetLabel.Size = UDim2.new(1, 0, 0, 18)
+targetLabel.Position = UDim2.new(0, 0, 0, 18)
+targetLabel.Text = ""
+targetLabel.TextColor3 = Settings.AccentColor
+targetLabel.TextSize = 13
+targetLabel.Font = Enum.Font.Code
+targetLabel.TextXAlignment = Enum.TextXAlignment.Left
+targetLabel.Parent = content
 
 local movesHolder = Instance.new("Frame")
 movesHolder.Name = "MovesHolder"
 movesHolder.BackgroundTransparency = 1
-movesHolder.Position = UDim2.new(0, 0, 0, 66)
-movesHolder.Size = UDim2.new(1, 0, 1, -66)
-movesHolder.ZIndex = 3
+movesHolder.Position = UDim2.new(0, 0, 0, 42)
+movesHolder.Size = UDim2.new(1, 0, 1, -42)
 movesHolder.Parent = content
 
 local listLayout = Instance.new("UIListLayout")
 listLayout.FillDirection = Enum.FillDirection.Vertical
 listLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
 listLayout.SortOrder = Enum.SortOrder.LayoutOrder
-listLayout.Padding = UDim.new(0, 6)
+listLayout.Padding = UDim.new(0, Settings.BarSpacing)
 listLayout.Parent = movesHolder
 
 local MoveRows = {}
@@ -263,74 +174,40 @@ local MoveRows = {}
 local function createMoveRow(index)
 	local row = Instance.new("Frame")
 	row.Name = "MoveRow_" .. index
-	row.Size = UDim2.new(1, 0, 0, 18)
-	row.BackgroundColor3 = Settings.CardColor
-	row.BackgroundTransparency = Settings.CardTransparency
+	row.Size = UDim2.new(1, 0, 0, Settings.BarHeight)
+	row.BackgroundColor3 = Settings.CooldownBackgroundColor
 	row.BorderSizePixel = 0
 	row.Visible = false
-	row.ZIndex = 3
 	row.Parent = movesHolder
 
 	local rowCorner = Instance.new("UICorner")
-	rowCorner.CornerRadius = UDim.new(0, 8)
+	rowCorner.CornerRadius = UDim.new(0, 5)
 	rowCorner.Parent = row
 
-	local rowStroke = Instance.new("UIStroke")
-	rowStroke.Color = Settings.OutlineColor
-	rowStroke.Thickness = 1
-	rowStroke.Transparency = 0.50
-	rowStroke.Parent = row
+	local fill = Instance.new("Frame")
+	fill.Name = "Fill"
+	fill.AnchorPoint = Vector2.new(1, 0)
+	fill.Position = UDim2.new(1, 0, 0, 0)
+	fill.Size = UDim2.new(0, 0, 1, 0)
+	fill.BackgroundColor3 = Settings.CooldownFillColor
+	fill.BorderSizePixel = 0
+	fill.Parent = row
+
+	local fillCorner = Instance.new("UICorner")
+	fillCorner.CornerRadius = UDim.new(0, 5)
+	fillCorner.Parent = fill
 
 	local label = Instance.new("TextLabel")
 	label.Name = "Label"
 	label.BackgroundTransparency = 1
+	label.Size = UDim2.new(1, -10, 1, 0)
 	label.Position = UDim2.new(0, 8, 0, 0)
-	label.Size = UDim2.new(1, -55, 1, 0)
 	label.Text = ""
 	label.TextColor3 = Settings.TextColor
-	label.TextSize = 12
-	label.Font = Enum.Font.GothamMedium
+	label.TextSize = 13
+	label.Font = Enum.Font.Code
 	label.TextXAlignment = Enum.TextXAlignment.Left
-	label.ZIndex = 4
 	label.Parent = row
-
-	local timeLabel = Instance.new("TextLabel")
-	timeLabel.Name = "Time"
-	timeLabel.BackgroundTransparency = 1
-	timeLabel.Position = UDim2.new(1, -42, 0, 0)
-	timeLabel.Size = UDim2.new(0, 34, 1, 0)
-	timeLabel.Text = ""
-	timeLabel.TextColor3 = Settings.SubTextColor
-	timeLabel.TextSize = 11
-	timeLabel.Font = Enum.Font.Code
-	timeLabel.TextXAlignment = Enum.TextXAlignment.Right
-	timeLabel.ZIndex = 4
-	timeLabel.Parent = row
-
-	local barBack = Instance.new("Frame")
-	barBack.Name = "BarBack"
-	barBack.Position = UDim2.new(0, 0, 1, -3)
-	barBack.Size = UDim2.new(1, 0, 0, 3)
-	barBack.BackgroundColor3 = Settings.BarBackColor
-	barBack.BorderSizePixel = 0
-	barBack.ZIndex = 4
-	barBack.Parent = row
-
-	local barBackCorner = Instance.new("UICorner")
-	barBackCorner.CornerRadius = UDim.new(1, 0)
-	barBackCorner.Parent = barBack
-
-	local fill = Instance.new("Frame")
-	fill.Name = "Fill"
-	fill.Size = UDim2.new(0, 0, 1, 0)
-	fill.BackgroundColor3 = Settings.BarFillColor
-	fill.BorderSizePixel = 0
-	fill.ZIndex = 5
-	fill.Parent = barBack
-
-	local fillCorner = Instance.new("UICorner")
-	fillCorner.CornerRadius = UDim.new(1, 0)
-	fillCorner.Parent = fill
 
 	return row
 end
@@ -347,10 +224,6 @@ local dragInput = nil
 local dragStart = nil
 local startPos = nil
 
-local function syncShadow()
-	shadow.Position = panel.Position + UDim2.new(0, 0, 0, 4)
-end
-
 local function updateDrag(input)
 	local delta = input.Position - dragStart
 	panel.Position = UDim2.new(
@@ -359,10 +232,9 @@ local function updateDrag(input)
 		startPos.Y.Scale,
 		startPos.Y.Offset + delta.Y
 	)
-	syncShadow()
 end
 
-topbar.InputBegan:Connect(function(input)
+titleBar.InputBegan:Connect(function(input)
 	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 		dragging = true
 		dragStart = input.Position
@@ -376,7 +248,7 @@ topbar.InputBegan:Connect(function(input)
 	end
 end)
 
-topbar.InputChanged:Connect(function(input)
+titleBar.InputChanged:Connect(function(input)
 	if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
 		dragInput = input
 	end
@@ -430,64 +302,103 @@ local function isValidVictim(character)
 	return Settings.ValidUsers[player.Name] == true
 end
 
-local function getAllCharacters()
-	local characters = {}
+local function getTargets()
+	local targets = {}
+	local seen = {}
 
-	for _, player in ipairs(Players:GetPlayers()) do
-		local character = player.Character
-		if character and character:IsA("Model") then
-			local humanoid = character:FindFirstChildOfClass("Humanoid")
-			if humanoid then
-				table.insert(characters, character)
-			end
+	local function addModel(model)
+		if not model or not model:IsA("Model") or seen[model] then
+			return
+		end
+
+		local humanoid = model:FindFirstChildOfClass("Humanoid")
+		if humanoid then
+			seen[model] = true
+			table.insert(targets, model)
 		end
 	end
 
-	return characters
+	local charactersFolder = workspace:FindFirstChild("Characters")
+	if charactersFolder then
+		for _, obj in ipairs(charactersFolder:GetChildren()) do
+			addModel(obj)
+		end
+	end
+
+	for _, player in ipairs(Players:GetPlayers()) do
+		addModel(player.Character)
+	end
+
+	for _, obj in ipairs(workspace:GetChildren()) do
+		addModel(obj)
+	end
+
+	return targets
 end
 
 local function clearPanel()
 	statusLabel.Text = "Waiting for a valid user to be attacked..."
-	statusLabel.TextColor3 = Settings.SubTextColor
-	attackerLabel.Text = "Attacker: -"
-	victimLabel.Text = "Victim: -"
+	statusLabel.TextColor3 = Settings.MutedTextColor
+	targetLabel.Text = ""
 
 	for _, row in ipairs(MoveRows) do
 		row.Visible = false
-		row.Label.Text = ""
-		row.Time.Text = ""
-		row.BarBack.Fill.Size = UDim2.new(0, 0, 1, 0)
+
+		local fill = row:FindFirstChild("Fill")
+		local label = row:FindFirstChild("Label")
+
+		if fill then
+			fill.Visible = false
+			fill.Size = UDim2.new(0, 0, 1, 0)
+		end
+
+		if label then
+			label.Text = ""
+		end
 	end
 end
 
 local function showMovesForSnapshot(snapshot, remainingActiveTime)
-	statusLabel.Text = string.format("%s (%.1fs)", LastReason, math.max(remainingActiveTime, 0))
+	local victimName = ActiveVictim and getCharacterLabel(ActiveVictim) or "Unknown"
+	statusLabel.Text = string.format("%s (%.1fs)", victimName .. " was hit", math.max(remainingActiveTime, 0))
 	statusLabel.TextColor3 = Settings.TextColor
-	attackerLabel.Text = "Attacker: " .. snapshot.Label
-	victimLabel.Text = "Victim: " .. (ActiveVictim and getCharacterLabel(ActiveVictim) or "-")
+	targetLabel.Text = "Target: " .. snapshot.Label
 
 	local moves = snapshot.Moves or {}
 
 	for i, row in ipairs(MoveRows) do
 		local move = moves[i]
+		local fill = row:FindFirstChild("Fill")
+		local label = row:FindFirstChild("Label")
 
 		if move then
 			row.Visible = true
-			row.Label.Text = move.Name
 
-			if move.RemainingTime > 0 and move.Cooldown > 0 then
-				local ratio = math.clamp(move.RemainingTime / move.Cooldown, 0, 1)
-				row.BarBack.Fill.Size = UDim2.new(ratio, 0, 1, 0)
-				row.Time.Text = string.format("%.1f", move.RemainingTime)
-			else
-				row.BarBack.Fill.Size = UDim2.new(0, 0, 1, 0)
-				row.Time.Text = "RDY"
+			if label then
+				label.Text = move.Name
+			end
+
+			if fill then
+				if move.RemainingTime > 0 and move.Cooldown > 0 then
+					local ratio = math.clamp(move.RemainingTime / move.Cooldown, 0, 1)
+					fill.Visible = true
+					fill.Size = UDim2.new(ratio, 0, 1, 0)
+				else
+					fill.Visible = false
+					fill.Size = UDim2.new(0, 0, 1, 0)
+				end
 			end
 		else
 			row.Visible = false
-			row.Label.Text = ""
-			row.Time.Text = ""
-			row.BarBack.Fill.Size = UDim2.new(0, 0, 1, 0)
+
+			if label then
+				label.Text = ""
+			end
+
+			if fill then
+				fill.Visible = false
+				fill.Size = UDim2.new(0, 0, 1, 0)
+			end
 		end
 	end
 end
@@ -579,10 +490,10 @@ local function findLikelyAttacker(victim, currentTime)
 	local bestElapsed = math.huge
 	local bestDistance = math.huge
 
-	for _, candidate in ipairs(getAllCharacters()) do
-		if candidate ~= victim then
-			local candidateRoot = candidate:FindFirstChild("HumanoidRootPart")
-			local elapsed = getMostRecentMoveElapsed(candidate, currentTime)
+	for character in pairs(CharacterSnapshots) do
+		if character ~= victim then
+			local candidateRoot = character:FindFirstChild("HumanoidRootPart")
+			local elapsed = getMostRecentMoveElapsed(character, currentTime)
 
 			if candidateRoot and elapsed and elapsed <= Settings.RecentAttackWindow then
 				local distance = (victimRoot.Position - candidateRoot.Position).Magnitude
@@ -591,7 +502,7 @@ local function findLikelyAttacker(victim, currentTime)
 					if elapsed < bestElapsed or (math.abs(elapsed - bestElapsed) < 0.05 and distance < bestDistance) then
 						bestElapsed = elapsed
 						bestDistance = distance
-						bestCharacter = candidate
+						bestCharacter = character
 					end
 				end
 			end
@@ -602,10 +513,10 @@ local function findLikelyAttacker(victim, currentTime)
 end
 
 local function setCombatTarget(attacker, victim)
-	ActiveAttacker = attacker
+	ActiveTarget = attacker
 	ActiveVictim = victim
 	ActiveUntil = tick() + Settings.ActiveDisplaySeconds
-	LastReason = "Attack detected"
+	LastCombatReason = "Combat active"
 end
 
 local function bindHumanoid(character)
@@ -650,17 +561,20 @@ local function cleanupHumanoidConnections(validCharacters)
 end
 
 clearPanel()
-syncShadow()
 
 --// =========================
 --// MAIN LOOP
 --// =========================
 RunService.RenderStepped:Connect(function()
 	local currentTime = tick()
-	local characters = getAllCharacters()
+	local targets = getTargets()
 	local validCharacters = {}
 
-	for _, character in ipairs(characters) do
+	for _, character in ipairs(targets) do
+		if not character:IsA("Model") then
+			continue
+		end
+
 		local humanoid = character:FindFirstChildOfClass("Humanoid")
 		if not humanoid or humanoid.Health <= 0 then
 			continue
@@ -678,17 +592,17 @@ RunService.RenderStepped:Connect(function()
 			CharacterSnapshots[character] = nil
 			MoveStates[character] = nil
 
-			if ActiveAttacker == character or ActiveVictim == character then
-				ActiveAttacker = nil
+			if ActiveTarget == character or ActiveVictim == character then
+				ActiveTarget = nil
 				ActiveVictim = nil
 				ActiveUntil = 0
-				LastReason = "Waiting for a valid user to be attacked..."
+				LastCombatReason = "Waiting for a valid user to be attacked..."
 			end
 		end
 	end
 
-	local isActive = ActiveAttacker ~= nil and currentTime <= ActiveUntil
-	local snapshot = isActive and CharacterSnapshots[ActiveAttacker] or nil
+	local isActive = ActiveTarget ~= nil and currentTime <= ActiveUntil
+	local snapshot = isActive and CharacterSnapshots[ActiveTarget] or nil
 
 	if isActive and snapshot then
 		showMovesForSnapshot(snapshot, ActiveUntil - currentTime)
