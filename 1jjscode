@@ -2,6 +2,7 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local CoreGui = game:GetService("CoreGui")
+local TweenService = game:GetService("TweenService")
 
 local localPlayer = Players.LocalPlayer
 local guiParent = (localPlayer and localPlayer:FindFirstChild("PlayerGui")) or CoreGui
@@ -15,32 +16,42 @@ end
 --// CONFIG
 --// =========================
 local Settings = {
-	PanelSize = UDim2.new(0, 250, 0, 185),
-	PanelPosition = UDim2.new(0, 35, 0.5, -95),
+	PanelSize = UDim2.new(0, 420, 0, 260),
+	PanelPosition = UDim2.new(0.5, -210, 0.55, -130),
 
 	ValidUsers = {
-	[localPlayer.Name] = true, -- always track yourself
-	["Anuribus"] = true,
-	["cd3u"] = true,
-	["afa67512"] = true,
-},
+		[localPlayer.Name] = true,
+		["Anuribus"] = true,
+		["cd3u"] = true,
+		["afa67512"] = true,
+	},
 
 	ActiveDisplaySeconds = 20,
 	RecentAttackWindow = 1.25,
 	MaxVisibleMoves = 6,
+	MaxDealDistance = 40,
 
-	CooldownFillColor = Color3.fromRGB(255, 70, 70),
-	CooldownBackgroundColor = Color3.fromRGB(35, 35, 35),
-	PanelBackgroundColor = Color3.fromRGB(20, 20, 20),
-	PanelOutlineColor = Color3.fromRGB(0, 0, 0),
-	TitleBarColor = Color3.fromRGB(28, 28, 28),
-	TitleColor = Color3.fromRGB(255, 255, 255),
-	TextColor = Color3.fromRGB(235, 235, 235),
-	MutedTextColor = Color3.fromRGB(160, 160, 160),
-	AccentColor = Color3.fromRGB(120, 180, 255),
+	WindowColor = Color3.fromRGB(20, 27, 38),
+	WindowAccent = Color3.fromRGB(27, 35, 49),
+	SidebarColor = Color3.fromRGB(17, 22, 31),
+	TopbarColor = Color3.fromRGB(24, 32, 45),
+	CardColor = Color3.fromRGB(29, 38, 53),
+	StrokeColor = Color3.fromRGB(53, 66, 86),
 
-	BarHeight = 20,
-	BarSpacing = 4,
+	TextColor = Color3.fromRGB(231, 236, 243),
+	SubTextColor = Color3.fromRGB(153, 167, 188),
+	AccentColor = Color3.fromRGB(108, 160, 255),
+	AccentSoft = Color3.fromRGB(70, 110, 190),
+
+	BarBackColor = Color3.fromRGB(20, 27, 38),
+	BarFillColor = Color3.fromRGB(88, 144, 255),
+
+	RedDot = Color3.fromRGB(255, 95, 87),
+	YellowDot = Color3.fromRGB(255, 189, 46),
+	GreenDot = Color3.fromRGB(40, 205, 65),
+
+	ShadowTransparency = 0.55,
+	BackgroundTransparency = 0.08,
 }
 
 --// =========================
@@ -54,14 +65,15 @@ end
 --// =========================
 --// STATE
 --// =========================
-local MoveStates = {}           -- [character] = { [moveName] = { LastUse = 0, TimeStarted = 0 } }
-local CharacterSnapshots = {}   -- [character] = snapshot
-local HumanoidConnections = {}  -- [humanoid] = connection
-local LastHealthByHumanoid = {} -- [humanoid] = health
+local MoveStates = {}
+local CharacterSnapshots = {}
+local HumanoidConnections = {}
+local LastHealthByHumanoid = {}
 
 local ActiveTarget = nil
 local ActiveUntil = 0
 local LastCombatReason = "Waiting for combat..."
+local WindowMinimized = false
 
 --// =========================
 --// GUI SETUP
@@ -70,141 +82,316 @@ local mainGui = Instance.new("ScreenGui")
 mainGui.Name = "CooldownTracker_GUI"
 mainGui.ResetOnSpawn = false
 mainGui.IgnoreGuiInset = true
+mainGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 mainGui.Parent = guiParent
+
+local shadow = Instance.new("Frame")
+shadow.Name = "Shadow"
+shadow.AnchorPoint = Vector2.new(0.5, 0.5)
+shadow.Size = UDim2.new(0, 436, 0, 276)
+shadow.Position = Settings.PanelPosition + UDim2.new(0, 0, 0, 0)
+shadow.BackgroundColor3 = Color3.new(0, 0, 0)
+shadow.BackgroundTransparency = Settings.ShadowTransparency
+shadow.BorderSizePixel = 0
+shadow.ZIndex = 0
+shadow.Parent = mainGui
+
+local shadowCorner = Instance.new("UICorner")
+shadowCorner.CornerRadius = UDim.new(0, 16)
+shadowCorner.Parent = shadow
 
 local panel = Instance.new("Frame")
 panel.Name = "TrackerPanel"
+panel.AnchorPoint = Vector2.new(0.5, 0.5)
 panel.Size = Settings.PanelSize
 panel.Position = Settings.PanelPosition
-panel.BackgroundColor3 = Settings.PanelBackgroundColor
-panel.BorderSizePixel = 1
-panel.BorderColor3 = Settings.PanelOutlineColor
+panel.BackgroundColor3 = Settings.WindowColor
+panel.BackgroundTransparency = Settings.BackgroundTransparency
+panel.BorderSizePixel = 0
 panel.Active = true
+panel.ZIndex = 2
 panel.Parent = mainGui
 
 local panelCorner = Instance.new("UICorner")
-panelCorner.CornerRadius = UDim.new(0, 8)
+panelCorner.CornerRadius = UDim.new(0, 14)
 panelCorner.Parent = panel
 
 local panelStroke = Instance.new("UIStroke")
-panelStroke.Color = Settings.PanelOutlineColor
+panelStroke.Color = Settings.StrokeColor
 panelStroke.Thickness = 1
+panelStroke.Transparency = 0.15
 panelStroke.Parent = panel
 
-local titleBar = Instance.new("Frame")
-titleBar.Name = "TitleBar"
-titleBar.Size = UDim2.new(1, 0, 0, 28)
-titleBar.BackgroundColor3 = Settings.TitleBarColor
-titleBar.BorderSizePixel = 0
-titleBar.Active = true
-titleBar.Parent = panel
+local topbar = Instance.new("Frame")
+topbar.Name = "Topbar"
+topbar.Size = UDim2.new(1, 0, 0, 42)
+topbar.BackgroundColor3 = Settings.TopbarColor
+topbar.BorderSizePixel = 0
+topbar.ZIndex = 3
+topbar.Parent = panel
 
-local titleCorner = Instance.new("UICorner")
-titleCorner.CornerRadius = UDim.new(0, 8)
-titleCorner.Parent = titleBar
+local topbarCorner = Instance.new("UICorner")
+topbarCorner.CornerRadius = UDim.new(0, 14)
+topbarCorner.Parent = topbar
 
-local titleMask = Instance.new("Frame")
-titleMask.BackgroundColor3 = Settings.TitleBarColor
-titleMask.BorderSizePixel = 0
-titleMask.Position = UDim2.new(0, 0, 0.5, 0)
-titleMask.Size = UDim2.new(1, 0, 0.5, 0)
-titleMask.Parent = titleBar
+local topbarFill = Instance.new("Frame")
+topbarFill.BackgroundColor3 = Settings.TopbarColor
+topbarFill.BorderSizePixel = 0
+topbarFill.Position = UDim2.new(0, 0, 0, 14)
+topbarFill.Size = UDim2.new(1, 0, 0, 28)
+topbarFill.ZIndex = 3
+topbarFill.Parent = topbar
+
+local trafficHolder = Instance.new("Frame")
+trafficHolder.BackgroundTransparency = 1
+trafficHolder.Size = UDim2.new(0, 70, 0, 14)
+trafficHolder.Position = UDim2.new(0, 14, 0, 14)
+trafficHolder.ZIndex = 4
+trafficHolder.Parent = topbar
+
+local trafficLayout = Instance.new("UIListLayout")
+trafficLayout.FillDirection = Enum.FillDirection.Horizontal
+trafficLayout.Padding = UDim.new(0, 8)
+trafficLayout.SortOrder = Enum.SortOrder.LayoutOrder
+trafficLayout.Parent = trafficHolder
+
+local function makeTrafficDot(name, color)
+	local dot = Instance.new("Frame")
+	dot.Name = name
+	dot.Size = UDim2.new(0, 12, 0, 12)
+	dot.BackgroundColor3 = color
+	dot.BorderSizePixel = 0
+	dot.ZIndex = 4
+	dot.Parent = trafficHolder
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(1, 0)
+	corner.Parent = dot
+
+	return dot
+end
+
+local redDot = makeTrafficDot("CloseDot", Settings.RedDot)
+local yellowDot = makeTrafficDot("MinimizeDot", Settings.YellowDot)
+local greenDot = makeTrafficDot("FocusDot", Settings.GreenDot)
 
 local titleLabel = Instance.new("TextLabel")
 titleLabel.BackgroundTransparency = 1
-titleLabel.Size = UDim2.new(1, -10, 1, 0)
-titleLabel.Position = UDim2.new(0, 10, 0, 0)
-titleLabel.Text = "Cooldown Tracker"
-titleLabel.TextColor3 = Settings.TitleColor
-titleLabel.TextSize = 16
-titleLabel.Font = Enum.Font.Code
-titleLabel.TextXAlignment = Enum.TextXAlignment.Left
-titleLabel.Parent = titleBar
+titleLabel.Size = UDim2.new(1, -160, 1, 0)
+titleLabel.Position = UDim2.new(0, 80, 0, 0)
+titleLabel.Text = "MacSploit Tracker"
+titleLabel.TextColor3 = Settings.TextColor
+titleLabel.TextSize = 18
+titleLabel.Font = Enum.Font.GothamSemibold
+titleLabel.TextXAlignment = Enum.TextXAlignment.Center
+titleLabel.ZIndex = 4
+titleLabel.Parent = topbar
 
-local content = Instance.new("Frame")
-content.Name = "Content"
-content.BackgroundTransparency = 1
-content.Position = UDim2.new(0, 8, 0, 34)
-content.Size = UDim2.new(1, -16, 1, -42)
-content.Parent = panel
+local rightInfo = Instance.new("TextLabel")
+rightInfo.BackgroundTransparency = 1
+rightInfo.Size = UDim2.new(0, 100, 1, 0)
+rightInfo.Position = UDim2.new(1, -108, 0, 0)
+rightInfo.Text = "All Ports ▾"
+rightInfo.TextColor3 = Settings.SubTextColor
+rightInfo.TextSize = 13
+rightInfo.Font = Enum.Font.GothamMedium
+rightInfo.TextXAlignment = Enum.TextXAlignment.Right
+rightInfo.ZIndex = 4
+rightInfo.Parent = topbar
+
+local sidebar = Instance.new("Frame")
+sidebar.Name = "Sidebar"
+sidebar.Position = UDim2.new(0, 0, 0, 42)
+sidebar.Size = UDim2.new(0, 48, 1, -42)
+sidebar.BackgroundColor3 = Settings.SidebarColor
+sidebar.BorderSizePixel = 0
+sidebar.ZIndex = 3
+sidebar.Parent = panel
+
+local sidebarIcons = {"<>", "[]", "()", "◫", "⚙"}
+for i, iconText in ipairs(sidebarIcons) do
+	local icon = Instance.new("TextLabel")
+	icon.BackgroundTransparency = 1
+	icon.Size = UDim2.new(1, 0, 0, 28)
+	icon.Position = UDim2.new(0, 0, 0, 12 + ((i - 1) * 38))
+	icon.Text = iconText
+	icon.TextColor3 = (i == 1) and Settings.TextColor or Settings.SubTextColor
+	icon.TextSize = 16
+	icon.Font = Enum.Font.Code
+	icon.ZIndex = 4
+	icon.Parent = sidebar
+end
+
+local body = Instance.new("Frame")
+body.Name = "Body"
+body.BackgroundTransparency = 1
+body.Position = UDim2.new(0, 58, 0, 54)
+body.Size = UDim2.new(1, -68, 1, -102)
+body.ZIndex = 3
+body.Parent = panel
+
+local headerCard = Instance.new("Frame")
+headerCard.Name = "HeaderCard"
+headerCard.Size = UDim2.new(1, 0, 0, 52)
+headerCard.BackgroundColor3 = Settings.CardColor
+headerCard.BorderSizePixel = 0
+headerCard.ZIndex = 3
+headerCard.Parent = body
+
+local headerCorner = Instance.new("UICorner")
+headerCorner.CornerRadius = UDim.new(0, 12)
+headerCorner.Parent = headerCard
+
+local headerStroke = Instance.new("UIStroke")
+headerStroke.Color = Settings.StrokeColor
+headerStroke.Thickness = 1
+headerStroke.Transparency = 0.35
+headerStroke.Parent = headerCard
 
 local statusLabel = Instance.new("TextLabel")
 statusLabel.Name = "Status"
 statusLabel.BackgroundTransparency = 1
-statusLabel.Size = UDim2.new(1, 0, 0, 18)
-statusLabel.Position = UDim2.new(0, 0, 0, 0)
+statusLabel.Position = UDim2.new(0, 14, 0, 7)
+statusLabel.Size = UDim2.new(1, -28, 0, 18)
 statusLabel.Text = "Waiting for combat..."
-statusLabel.TextColor3 = Settings.MutedTextColor
-statusLabel.TextSize = 13
-statusLabel.Font = Enum.Font.Code
+statusLabel.TextColor3 = Settings.SubTextColor
+statusLabel.TextSize = 14
+statusLabel.Font = Enum.Font.GothamMedium
 statusLabel.TextXAlignment = Enum.TextXAlignment.Left
-statusLabel.Parent = content
+statusLabel.ZIndex = 4
+statusLabel.Parent = headerCard
 
 local targetLabel = Instance.new("TextLabel")
 targetLabel.Name = "Target"
 targetLabel.BackgroundTransparency = 1
-targetLabel.Size = UDim2.new(1, 0, 0, 18)
-targetLabel.Position = UDim2.new(0, 0, 0, 18)
-targetLabel.Text = ""
+targetLabel.Position = UDim2.new(0, 14, 0, 25)
+targetLabel.Size = UDim2.new(1, -28, 0, 18)
+targetLabel.Text = "No target"
 targetLabel.TextColor3 = Settings.AccentColor
-targetLabel.TextSize = 13
-targetLabel.Font = Enum.Font.Code
+targetLabel.TextSize = 14
+targetLabel.Font = Enum.Font.GothamSemibold
 targetLabel.TextXAlignment = Enum.TextXAlignment.Left
-targetLabel.Parent = content
+targetLabel.ZIndex = 4
+targetLabel.Parent = headerCard
 
 local movesHolder = Instance.new("Frame")
 movesHolder.Name = "MovesHolder"
 movesHolder.BackgroundTransparency = 1
-movesHolder.Position = UDim2.new(0, 0, 0, 42)
-movesHolder.Size = UDim2.new(1, 0, 1, -42)
-movesHolder.Parent = content
+movesHolder.Position = UDim2.new(0, 0, 0, 62)
+movesHolder.Size = UDim2.new(1, 0, 1, -62)
+movesHolder.ZIndex = 3
+movesHolder.Parent = body
 
 local listLayout = Instance.new("UIListLayout")
 listLayout.FillDirection = Enum.FillDirection.Vertical
 listLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
 listLayout.SortOrder = Enum.SortOrder.LayoutOrder
-listLayout.Padding = UDim.new(0, Settings.BarSpacing)
+listLayout.Padding = UDim.new(0, 8)
 listLayout.Parent = movesHolder
+
+local footer = Instance.new("Frame")
+footer.Name = "Footer"
+footer.Position = UDim2.new(0, 58, 1, -38)
+footer.Size = UDim2.new(1, -68, 0, 28)
+footer.BackgroundColor3 = Settings.TopbarColor
+footer.BorderSizePixel = 0
+footer.ZIndex = 3
+footer.Parent = panel
+
+local footerCorner = Instance.new("UICorner")
+footerCorner.CornerRadius = UDim.new(0, 10)
+footerCorner.Parent = footer
+
+local footerStroke = Instance.new("UIStroke")
+footerStroke.Color = Settings.StrokeColor
+footerStroke.Thickness = 1
+footerStroke.Transparency = 0.35
+footerStroke.Parent = footer
+
+local footerLabel = Instance.new("TextLabel")
+footerLabel.BackgroundTransparency = 1
+footerLabel.Size = UDim2.new(1, -20, 1, 0)
+footerLabel.Position = UDim2.new(0, 10, 0, 0)
+footerLabel.Text = "[Console] idle"
+footerLabel.TextColor3 = Settings.SubTextColor
+footerLabel.TextSize = 13
+footerLabel.Font = Enum.Font.Code
+footerLabel.TextXAlignment = Enum.TextXAlignment.Left
+footerLabel.ZIndex = 4
+footerLabel.Parent = footer
 
 local MoveRows = {}
 
 local function createMoveRow(index)
 	local row = Instance.new("Frame")
 	row.Name = "MoveRow_" .. index
-	row.Size = UDim2.new(1, 0, 0, Settings.BarHeight)
-	row.BackgroundColor3 = Settings.CooldownBackgroundColor
+	row.Size = UDim2.new(1, 0, 0, 34)
+	row.BackgroundColor3 = Settings.CardColor
 	row.BorderSizePixel = 0
 	row.Visible = false
+	row.ZIndex = 3
 	row.Parent = movesHolder
 
 	local rowCorner = Instance.new("UICorner")
-	rowCorner.CornerRadius = UDim.new(0, 5)
+	rowCorner.CornerRadius = UDim.new(0, 10)
 	rowCorner.Parent = row
 
-	local fill = Instance.new("Frame")
-	fill.Name = "Fill"
-	fill.AnchorPoint = Vector2.new(1, 0)
-	fill.Position = UDim2.new(1, 0, 0, 0)
-	fill.Size = UDim2.new(0, 0, 1, 0)
-	fill.BackgroundColor3 = Settings.CooldownFillColor
-	fill.BorderSizePixel = 0
-	fill.Parent = row
-
-	local fillCorner = Instance.new("UICorner")
-	fillCorner.CornerRadius = UDim.new(0, 5)
-	fillCorner.Parent = fill
+	local rowStroke = Instance.new("UIStroke")
+	rowStroke.Color = Settings.StrokeColor
+	rowStroke.Thickness = 1
+	rowStroke.Transparency = 0.45
+	rowStroke.Parent = row
 
 	local label = Instance.new("TextLabel")
 	label.Name = "Label"
 	label.BackgroundTransparency = 1
-	label.Size = UDim2.new(1, -10, 1, 0)
-	label.Position = UDim2.new(0, 8, 0, 0)
+	label.Position = UDim2.new(0, 12, 0, 4)
+	label.Size = UDim2.new(1, -78, 0, 14)
 	label.Text = ""
 	label.TextColor3 = Settings.TextColor
 	label.TextSize = 13
-	label.Font = Enum.Font.Code
+	label.Font = Enum.Font.GothamMedium
 	label.TextXAlignment = Enum.TextXAlignment.Left
+	label.ZIndex = 4
 	label.Parent = row
+
+	local timeLabel = Instance.new("TextLabel")
+	timeLabel.Name = "Time"
+	timeLabel.BackgroundTransparency = 1
+	timeLabel.Position = UDim2.new(1, -58, 0, 4)
+	timeLabel.Size = UDim2.new(0, 46, 0, 14)
+	timeLabel.Text = ""
+	timeLabel.TextColor3 = Settings.SubTextColor
+	timeLabel.TextSize = 12
+	timeLabel.Font = Enum.Font.Code
+	timeLabel.TextXAlignment = Enum.TextXAlignment.Right
+	timeLabel.ZIndex = 4
+	timeLabel.Parent = row
+
+	local barBack = Instance.new("Frame")
+	barBack.Name = "BarBack"
+	barBack.Position = UDim2.new(0, 12, 1, -11)
+	barBack.Size = UDim2.new(1, -24, 0, 5)
+	barBack.BackgroundColor3 = Settings.BarBackColor
+	barBack.BorderSizePixel = 0
+	barBack.ZIndex = 4
+	barBack.Parent = row
+
+	local barBackCorner = Instance.new("UICorner")
+	barBackCorner.CornerRadius = UDim.new(1, 0)
+	barBackCorner.Parent = barBack
+
+	local fill = Instance.new("Frame")
+	fill.Name = "Fill"
+	fill.Size = UDim2.new(0, 0, 1, 0)
+	fill.BackgroundColor3 = Settings.BarFillColor
+	fill.BorderSizePixel = 0
+	fill.ZIndex = 5
+	fill.Parent = barBack
+
+	local fillCorner = Instance.new("UICorner")
+	fillCorner.CornerRadius = UDim.new(1, 0)
+	fillCorner.Parent = fill
 
 	return row
 end
@@ -221,6 +408,10 @@ local dragInput = nil
 local dragStart = nil
 local startPos = nil
 
+local function syncShadow()
+	shadow.Position = panel.Position + UDim2.new(0, 0, 0, 4)
+end
+
 local function updateDrag(input)
 	local delta = input.Position - dragStart
 	panel.Position = UDim2.new(
@@ -229,9 +420,10 @@ local function updateDrag(input)
 		startPos.Y.Scale,
 		startPos.Y.Offset + delta.Y
 	)
+	syncShadow()
 end
 
-titleBar.InputBegan:Connect(function(input)
+topbar.InputBegan:Connect(function(input)
 	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 		dragging = true
 		dragStart = input.Position
@@ -245,7 +437,7 @@ titleBar.InputBegan:Connect(function(input)
 	end
 end)
 
-titleBar.InputChanged:Connect(function(input)
+topbar.InputChanged:Connect(function(input)
 	if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
 		dragInput = input
 	end
@@ -254,6 +446,33 @@ end)
 UserInputService.InputChanged:Connect(function(input)
 	if dragging and input == dragInput then
 		updateDrag(input)
+	end
+end)
+
+yellowDot.InputBegan:Connect(function(input)
+	if input.UserInputType ~= Enum.UserInputType.MouseButton1 then
+		return
+	end
+
+	WindowMinimized = not WindowMinimized
+
+	if WindowMinimized then
+		body.Visible = false
+		footer.Visible = false
+		panel:TweenSize(UDim2.new(0, 420, 0, 42), Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.18, true)
+		shadow:TweenSize(UDim2.new(0, 436, 0, 58), Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.18, true)
+	else
+		body.Visible = true
+		footer.Visible = true
+		panel:TweenSize(Settings.PanelSize, Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.18, true)
+		shadow:TweenSize(UDim2.new(0, 436, 0, 276), Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.18, true)
+	end
+end)
+
+redDot.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		mainGui.Enabled = not mainGui.Enabled
+		shadow.Visible = mainGui.Enabled
 	end
 end)
 
@@ -298,6 +517,22 @@ local function isTrackedCharacter(character)
 	return Settings.ValidUsers[player.Name] == true
 end
 
+local function isNearLocalPlayer(character, maxDistance)
+	local localCharacter = localPlayer and localPlayer.Character
+	if not localCharacter then
+		return false
+	end
+
+	local localRoot = localCharacter:FindFirstChild("HumanoidRootPart")
+	local targetRoot = character and character:FindFirstChild("HumanoidRootPart")
+
+	if not localRoot or not targetRoot then
+		return true
+	end
+
+	return (localRoot.Position - targetRoot.Position).Magnitude <= maxDistance
+end
+
 local function getTargets()
 	local targets = {}
 	local seen = {}
@@ -327,78 +562,22 @@ local function getTargets()
 	return targets
 end
 
-local function localPlayerRecentlyUsedMove(currentTime, window)
-	local localCharacter = localPlayer and localPlayer.Character
-	if not localCharacter then
-		return false
-	end
-
-	local prefix = localCharacter.Name .. "_"
-
-	for stateKey, moveState in pairs(MoveStates) do
-		if string.sub(stateKey, 1, #prefix) == prefix then
-			if moveState.TimeStarted > 0 and (currentTime - moveState.TimeStarted) <= window then
-				return true
-			end
-		end
-	end
-
-	return false
-end
-
-local function bindHumanoid(character)
-	local humanoid = character:FindFirstChildOfClass("Humanoid")
-	if not humanoid or HumanoidConnections[humanoid] then
-		return
-	end
-
-	LastHealthByHumanoid[humanoid] = humanoid.Health
-
-	HumanoidConnections[humanoid] = humanoid.HealthChanged:Connect(function(newHealth)
-		local oldHealth = LastHealthByHumanoid[humanoid]
-		local now = tick()
-
-		if oldHealth ~= nil and newHealth < oldHealth then
-			local localCharacter = localPlayer and localPlayer.Character
-
-			if localCharacter then
-				if character == localCharacter then
-					-- you took damage
-					setCombatTarget(character, "You took damage")
-				else
-					-- only count it if YOU recently used a move
-					-- and the damaged character is near you
-					if localPlayerRecentlyUsedMove(now, Settings.RecentAttackWindow)
-						and isNearLocalPlayer(character, 40) then
-						setCombatTarget(character, "You dealt damage")
-					end
-				end
-			end
-		end
-
-		LastHealthByHumanoid[humanoid] = newHealth
-	end)
-end
-
 local function clearPanel()
 	statusLabel.Text = "Waiting for combat..."
-	statusLabel.TextColor3 = Settings.MutedTextColor
-	targetLabel.Text = ""
+	statusLabel.TextColor3 = Settings.SubTextColor
+	targetLabel.Text = "No target"
+	footerLabel.Text = "[Console] idle"
 
 	for _, row in ipairs(MoveRows) do
 		row.Visible = false
 
-		local fill = row:FindFirstChild("Fill")
-		local label = row:FindFirstChild("Label")
+		local fill = row.BarBack.Fill
+		local label = row.Label
+		local timeLabel = row.Time
 
-		if fill then
-			fill.Visible = false
-			fill.Size = UDim2.new(0, 0, 1, 0)
-		end
-
-		if label then
-			label.Text = ""
-		end
+		label.Text = ""
+		timeLabel.Text = ""
+		fill.Size = UDim2.new(0, 0, 1, 0)
 	end
 end
 
@@ -406,42 +585,33 @@ local function showMovesForSnapshot(snapshot, remainingActiveTime)
 	statusLabel.Text = string.format("%s (%.1fs)", LastCombatReason, math.max(remainingActiveTime, 0))
 	statusLabel.TextColor3 = Settings.TextColor
 	targetLabel.Text = "Target: " .. snapshot.Label
+	footerLabel.Text = "[Console] tracking " .. snapshot.Label
 
 	local moves = snapshot.Moves or {}
 
 	for i, row in ipairs(MoveRows) do
 		local move = moves[i]
-		local fill = row:FindFirstChild("Fill")
-		local label = row:FindFirstChild("Label")
+		local fill = row.BarBack.Fill
+		local label = row.Label
+		local timeLabel = row.Time
 
 		if move then
 			row.Visible = true
+			label.Text = move.Name
 
-			if label then
-				label.Text = move.Name
-			end
-
-			if fill then
-				if move.RemainingTime > 0 and move.Cooldown > 0 then
-					local ratio = math.clamp(move.RemainingTime / move.Cooldown, 0, 1)
-					fill.Visible = true
-					fill.Size = UDim2.new(ratio, 0, 1, 0)
-				else
-					fill.Visible = false
-					fill.Size = UDim2.new(0, 0, 1, 0)
-				end
+			if move.RemainingTime > 0 and move.Cooldown > 0 then
+				local ratio = math.clamp(move.RemainingTime / move.Cooldown, 0, 1)
+				fill.Size = UDim2.new(ratio, 0, 1, 0)
+				timeLabel.Text = string.format("%.1f", move.RemainingTime)
+			else
+				fill.Size = UDim2.new(0, 0, 1, 0)
+				timeLabel.Text = "RDY"
 			end
 		else
 			row.Visible = false
-
-			if label then
-				label.Text = ""
-			end
-
-			if fill then
-				fill.Visible = false
-				fill.Size = UDim2.new(0, 0, 1, 0)
-			end
+			label.Text = ""
+			timeLabel.Text = ""
+			fill.Size = UDim2.new(0, 0, 1, 0)
 		end
 	end
 end
@@ -532,7 +702,6 @@ local function bindHumanoid(character)
 		return
 	end
 
-	-- ignore anyone not in the tracked username list
 	if not isTrackedCharacter(character) then
 		return
 	end
@@ -551,7 +720,7 @@ local function bindHumanoid(character)
 					setCombatTarget(character, "You took damage")
 				else
 					if localPlayerRecentlyUsedMove(now, Settings.RecentAttackWindow)
-						and isNearLocalPlayer(character, 40) then
+						and isNearLocalPlayer(character, Settings.MaxDealDistance) then
 						setCombatTarget(character, "You dealt damage")
 					end
 				end
@@ -578,6 +747,7 @@ local function cleanupHumanoidConnections(validCharacters)
 end
 
 clearPanel()
+syncShadow()
 
 --// =========================
 --// MAIN LOOP
