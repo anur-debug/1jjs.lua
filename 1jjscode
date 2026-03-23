@@ -696,6 +696,48 @@ local function localPlayerRecentlyUsedMove(currentTime, window)
 	return false
 end
 
+local function characterRecentlyUsedMove(character, currentTime, window)
+	local charMoveStates = MoveStates[character]
+	if not charMoveStates then
+		return false
+	end
+
+	for _, moveState in pairs(charMoveStates) do
+		if moveState.TimeStarted > 0 and (currentTime - moveState.TimeStarted) <= window then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function findLikelyAttacker(victim, currentTime)
+	local victimRoot = victim and victim:FindFirstChild("HumanoidRootPart")
+	local bestCharacter = nil
+	local bestDistance = math.huge
+
+	for _, other in ipairs(getTargets()) do
+		if other ~= victim then
+			local otherRoot = other:FindFirstChild("HumanoidRootPart")
+
+			if characterRecentlyUsedMove(other, currentTime, Settings.RecentAttackWindow) then
+				local distance = math.huge
+
+				if victimRoot and otherRoot then
+					distance = (victimRoot.Position - otherRoot.Position).Magnitude
+				end
+
+				if distance <= Settings.MaxDealDistance and distance < bestDistance then
+					bestDistance = distance
+					bestCharacter = other
+				end
+			end
+		end
+	end
+
+	return bestCharacter
+end
+
 local function bindHumanoid(character)
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	if not humanoid or HumanoidConnections[humanoid] then
@@ -717,7 +759,13 @@ local function bindHumanoid(character)
 
 			if localCharacter then
 				if character == localCharacter then
-					setCombatTarget(character, "You took damage")
+					local attacker = findLikelyAttacker(character, now)
+
+					if attacker then
+						setCombatTarget(attacker, "You were hit by " .. getCharacterLabel(attacker))
+					else
+						setCombatTarget(character, "You took damage")
+					end
 				else
 					if localPlayerRecentlyUsedMove(now, Settings.RecentAttackWindow)
 						and isNearLocalPlayer(character, Settings.MaxDealDistance) then
