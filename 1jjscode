@@ -1,0 +1,461 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local CoreGui = game:GetService("CoreGui")
+
+local localPlayer = Players.LocalPlayer
+local guiParent = (localPlayer and localPlayer:FindFirstChild("PlayerGui")) or CoreGui
+
+if not guiParent then
+	warn("Could not find suitable GUI parent. Tracker UI might not be visible.")
+	return
+end
+
+--// =========================
+--// CONFIG
+--// =========================
+local Settings = {
+	PanelSize = UDim2.new(0, 250, 0, 185),
+	PanelPosition = UDim2.new(0, 35, 0.5, -95),
+
+	ActiveDisplaySeconds = 8, -- how long to keep values visible after someone gets hit
+	MaxVisibleMoves = 6,
+
+	CooldownFillColor = Color3.fromRGB(255, 70, 70),
+	CooldownBackgroundColor = Color3.fromRGB(35, 35, 35),
+	PanelBackgroundColor = Color3.fromRGB(20, 20, 20),
+	PanelOutlineColor = Color3.fromRGB(0, 0, 0),
+	TitleColor = Color3.fromRGB(255, 255, 255),
+	TextColor = Color3.fromRGB(235, 235, 235),
+	MutedTextColor = Color3.fromRGB(160, 160, 160),
+	AccentColor = Color3.fromRGB(120, 180, 255),
+
+	BarHeight = 20,
+	BarSpacing = 4,
+}
+
+--// =========================
+--// STATE
+--// =========================
+local MoveStates = {}
+local HealthStates = {}
+local CharacterSnapshots = {}
+
+local ActiveTargetName = nil
+local ActiveUntil = 0
+
+--// =========================
+--// GUI SETUP
+--// =========================
+local mainGui = Instance.new("ScreenGui")
+mainGui.Name = "CooldownTracker_GUI"
+mainGui.ResetOnSpawn = false
+mainGui.IgnoreGuiInset = true
+mainGui.Parent = guiParent
+
+local panel = Instance.new("Frame")
+panel.Name = "TrackerPanel"
+panel.Size = Settings.PanelSize
+panel.Position = Settings.PanelPosition
+panel.BackgroundColor3 = Settings.PanelBackgroundColor
+panel.BorderSizePixel = 1
+panel.BorderColor3 = Settings.PanelOutlineColor
+panel.Active = true
+panel.Parent = mainGui
+
+local panelCorner = Instance.new("UICorner")
+panelCorner.CornerRadius = UDim.new(0, 8)
+panelCorner.Parent = panel
+
+local stroke = Instance.new("UIStroke")
+stroke.Color = Settings.PanelOutlineColor
+stroke.Thickness = 1
+stroke.Parent = panel
+
+local titleBar = Instance.new("Frame")
+titleBar.Name = "TitleBar"
+titleBar.Size = UDim2.new(1, 0, 0, 28)
+titleBar.BackgroundColor3 = Color3.fromRGB(28, 28, 28)
+titleBar.BorderSizePixel = 0
+titleBar.Parent = panel
+
+local titleCorner = Instance.new("UICorner")
+titleCorner.CornerRadius = UDim.new(0, 8)
+titleCorner.Parent = titleBar
+
+local titleMask = Instance.new("Frame")
+titleMask.BackgroundColor3 = Color3.fromRGB(28, 28, 28)
+titleMask.BorderSizePixel = 0
+titleMask.Position = UDim2.new(0, 0, 0.5, 0)
+titleMask.Size = UDim2.new(1, 0, 0.5, 0)
+titleMask.Parent = titleBar
+
+local titleLabel = Instance.new("TextLabel")
+titleLabel.BackgroundTransparency = 1
+titleLabel.Size = UDim2.new(1, -10, 1, 0)
+titleLabel.Position = UDim2.new(0, 10, 0, 0)
+titleLabel.Text = "Cooldown Tracker"
+titleLabel.TextColor3 = Settings.TitleColor
+titleLabel.TextSize = 16
+titleLabel.Font = Enum.Font.Code
+titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+titleLabel.Parent = titleBar
+
+local content = Instance.new("Frame")
+content.Name = "Content"
+content.BackgroundTransparency = 1
+content.Position = UDim2.new(0, 8, 0, 34)
+content.Size = UDim2.new(1, -16, 1, -42)
+content.Parent = panel
+
+local statusLabel = Instance.new("TextLabel")
+statusLabel.Name = "Status"
+statusLabel.BackgroundTransparency = 1
+statusLabel.Size = UDim2.new(1, 0, 0, 18)
+statusLabel.Position = UDim2.new(0, 0, 0, 0)
+statusLabel.Text = "Waiting for combat..."
+statusLabel.TextColor3 = Settings.MutedTextColor
+statusLabel.TextSize = 13
+statusLabel.Font = Enum.Font.Code
+statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+statusLabel.Parent = content
+
+local targetLabel = Instance.new("TextLabel")
+targetLabel.Name = "Target"
+targetLabel.BackgroundTransparency = 1
+targetLabel.Size = UDim2.new(1, 0, 0, 18)
+targetLabel.Position = UDim2.new(0, 0, 0, 18)
+targetLabel.Text = ""
+targetLabel.TextColor3 = Settings.AccentColor
+targetLabel.TextSize = 13
+targetLabel.Font = Enum.Font.Code
+targetLabel.TextXAlignment = Enum.TextXAlignment.Left
+targetLabel.Parent = content
+
+local movesHolder = Instance.new("Frame")
+movesHolder.Name = "MovesHolder"
+movesHolder.BackgroundTransparency = 1
+movesHolder.Position = UDim2.new(0, 0, 0, 42)
+movesHolder.Size = UDim2.new(1, 0, 1, -42)
+movesHolder.Parent = content
+
+local listLayout = Instance.new("UIListLayout")
+listLayout.FillDirection = Enum.FillDirection.Vertical
+listLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+listLayout.Padding = UDim.new(0, Settings.BarSpacing)
+listLayout.Parent = movesHolder
+
+local MoveRows = {}
+
+local function createMoveRow(index)
+	local row = Instance.new("Frame")
+	row.Name = "MoveRow_" .. index
+	row.Size = UDim2.new(1, 0, 0, Settings.BarHeight)
+	row.BackgroundColor3 = Settings.CooldownBackgroundColor
+	row.BorderSizePixel = 0
+	row.Visible = false
+	row.Parent = movesHolder
+
+	local rowCorner = Instance.new("UICorner")
+	rowCorner.CornerRadius = UDim.new(0, 5)
+	rowCorner.Parent = row
+
+	local fill = Instance.new("Frame")
+	fill.Name = "Fill"
+	fill.AnchorPoint = Vector2.new(1, 0)
+	fill.Position = UDim2.new(1, 0, 0, 0)
+	fill.Size = UDim2.new(0, 0, 1, 0)
+	fill.BackgroundColor3 = Settings.CooldownFillColor
+	fill.BorderSizePixel = 0
+	fill.Parent = row
+
+	local fillCorner = Instance.new("UICorner")
+	fillCorner.CornerRadius = UDim.new(0, 5)
+	fillCorner.Parent = fill
+
+	local label = Instance.new("TextLabel")
+	label.Name = "Label"
+	label.BackgroundTransparency = 1
+	label.Size = UDim2.new(1, -10, 1, 0)
+	label.Position = UDim2.new(0, 8, 0, 0)
+	label.Text = ""
+	label.TextColor3 = Settings.TextColor
+	label.TextSize = 13
+	label.Font = Enum.Font.Code
+	label.TextXAlignment = Enum.TextXAlignment.Left
+	label.Parent = row
+
+	return row
+end
+
+for i = 1, Settings.MaxVisibleMoves do
+	MoveRows[i] = createMoveRow(i)
+end
+
+--// =========================
+--// DRAGGING
+--// =========================
+local dragging = false
+local dragInput = nil
+local dragStart = nil
+local startPos = nil
+
+local function updateDrag(input)
+	local delta = input.Position - dragStart
+	panel.Position = UDim2.new(
+		startPos.X.Scale,
+		startPos.X.Offset + delta.X,
+		startPos.Y.Scale,
+		startPos.Y.Offset + delta.Y
+	)
+end
+
+titleBar.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		dragging = true
+		dragStart = input.Position
+		startPos = panel.Position
+
+		input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then
+				dragging = false
+			end
+		end)
+	end
+end)
+
+titleBar.InputChanged:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+		dragInput = input
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if dragging and input == dragInput then
+		updateDrag(input)
+	end
+end)
+
+--// =========================
+--// HELPERS
+--// =========================
+local function getAttribute(instance, attr, default)
+	if not instance then
+		return default
+	end
+
+	local value = instance:GetAttribute(attr)
+	if value ~= nil then
+		return value
+	end
+
+	return default
+end
+
+local function getTargets()
+	local targets = {}
+	local charactersFolder = workspace:FindFirstChild("Characters")
+
+	if charactersFolder then
+		for _, obj in ipairs(charactersFolder:GetChildren()) do
+			table.insert(targets, obj)
+		end
+	else
+		for _, obj in ipairs(workspace:GetChildren()) do
+			if obj:IsA("Model") and obj:FindFirstChild("Humanoid") then
+				table.insert(targets, obj)
+			end
+		end
+	end
+
+	return targets
+end
+
+local function clearPanel()
+	statusLabel.Text = "Waiting for combat..."
+	statusLabel.TextColor3 = Settings.MutedTextColor
+	targetLabel.Text = ""
+
+	for _, row in ipairs(MoveRows) do
+		row.Visible = false
+
+		local fill = row:FindFirstChild("Fill")
+		local label = row:FindFirstChild("Label")
+
+		if fill then
+			fill.Visible = false
+			fill.Size = UDim2.new(0, 0, 1, 0)
+		end
+
+		if label then
+			label.Text = ""
+		end
+	end
+end
+
+local function showMovesForCharacter(characterName, snapshot, remainingActiveTime)
+	statusLabel.Text = string.format("Combat active (%.1fs)", math.max(remainingActiveTime, 0))
+	statusLabel.TextColor3 = Settings.TextColor
+	targetLabel.Text = "Target: " .. characterName
+
+	local moves = snapshot.Moves or {}
+
+	for i, row in ipairs(MoveRows) do
+		local move = moves[i]
+		local fill = row:FindFirstChild("Fill")
+		local label = row:FindFirstChild("Label")
+
+		if move then
+			row.Visible = true
+
+			if label then
+				label.Text = move.Name
+			end
+
+			if fill then
+				if move.RemainingTime > 0 and move.Cooldown > 0 then
+					local ratio = math.clamp(move.RemainingTime / move.Cooldown, 0, 1)
+					fill.Visible = true
+					fill.Size = UDim2.new(ratio, 0, 1, 0)
+				else
+					fill.Visible = false
+					fill.Size = UDim2.new(0, 0, 1, 0)
+				end
+			end
+		else
+			row.Visible = false
+
+			if label then
+				label.Text = ""
+			end
+
+			if fill then
+				fill.Visible = false
+				fill.Size = UDim2.new(0, 0, 1, 0)
+			end
+		end
+	end
+end
+
+local function buildSnapshotForCharacter(character, currentTime)
+	local charName = character.Name
+	local moveset = character:FindFirstChild("Moveset")
+	local moves = {}
+
+	if moveset then
+		for idx, moveInstance in ipairs(moveset:GetChildren()) do
+			local key = getAttribute(moveInstance, "Key", idx)
+			local cooldownDuration = tonumber(moveInstance.Value) or 0
+			local lastUseId = getAttribute(moveInstance, "LastUse", 0)
+
+			local stateKey = charName .. "_" .. moveInstance.Name
+			local moveState = MoveStates[stateKey] or {
+				LastUse = 0,
+				TimeStarted = 0,
+			}
+
+			if lastUseId ~= moveState.LastUse then
+				moveState.LastUse = lastUseId
+				moveState.TimeStarted = currentTime
+			end
+
+			MoveStates[stateKey] = moveState
+
+			local timePassed = currentTime - moveState.TimeStarted
+			local remainingTime = 0
+
+			if moveState.TimeStarted > 0 and cooldownDuration > 0 and timePassed < cooldownDuration then
+				remainingTime = cooldownDuration - timePassed
+			end
+
+			table.insert(moves, {
+				Name = moveInstance.Name,
+				Key = key,
+				Cooldown = cooldownDuration,
+				RemainingTime = remainingTime,
+			})
+		end
+
+		table.sort(moves, function(a, b)
+			return a.Key < b.Key
+		end)
+	end
+
+	return {
+		Character = character,
+		Moves = moves,
+	}
+end
+
+clearPanel()
+
+--// =========================
+--// MAIN LOOP
+--// =========================
+RunService.RenderStepped:Connect(function()
+	local currentTime = tick()
+	local targets = getTargets()
+	local seenCharacters = {}
+
+	for _, character in ipairs(targets) do
+		if not character:IsA("Model") then
+			continue
+		end
+
+		local humanoid = character:FindFirstChild("Humanoid")
+		local root = character:FindFirstChild("HumanoidRootPart")
+
+		if not humanoid or not root or humanoid.Health <= 0 then
+			continue
+		end
+
+		local charName = character.Name
+		seenCharacters[charName] = true
+
+		-- Always keep move states updated in the background,
+		-- even if panel is currently idle.
+		CharacterSnapshots[charName] = buildSnapshotForCharacter(character, currentTime)
+
+		-- Detect combat when health drops.
+		local currentHealth = humanoid.Health
+		local previousHealth = HealthStates[charName]
+
+		if previousHealth ~= nil and currentHealth < previousHealth then
+			ActiveTargetName = charName
+			ActiveUntil = currentTime + Settings.ActiveDisplaySeconds
+		end
+
+		HealthStates[charName] = currentHealth
+	end
+
+	-- Cleanup removed characters
+	for charName in pairs(HealthStates) do
+		if not seenCharacters[charName] then
+			HealthStates[charName] = nil
+			CharacterSnapshots[charName] = nil
+
+			for moveStateKey in pairs(MoveStates) do
+				if string.sub(moveStateKey, 1, #charName + 1) == (charName .. "_") then
+					MoveStates[moveStateKey] = nil
+				end
+			end
+
+			if ActiveTargetName == charName then
+				ActiveTargetName = nil
+				ActiveUntil = 0
+			end
+		end
+	end
+
+	-- Panel logic:
+	-- visible all the time, but only shows values when there was recent damage.
+	local isActive = ActiveTargetName ~= nil and currentTime <= ActiveUntil
+	local snapshot = isActive and CharacterSnapshots[ActiveTargetName] or nil
+
+	if isActive and snapshot then
+		showMovesForCharacter(ActiveTargetName, snapshot, ActiveUntil - currentTime)
+	else
+		clearPanel()
+	end
+end)
