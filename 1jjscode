@@ -15,37 +15,39 @@ end
 --// SETTINGS
 --// =========================
 local Settings = {
-	PanelSize = UDim2.new(0, 265, 0, 195),
-	PanelPosition = UDim2.new(0, 35, 0.5, -97),
+	PanelSize = UDim2.new(0, 270, 0, 198),
+	PanelPosition = UDim2.new(0, 35, 0.5, -99),
 
-	ActiveDisplaySeconds = 10,
-	RecentAttackWindow = 1.2,
-	MaxAttackDistance = 45,
-	MaxVisibleMoves = 6,
-
+	-- These are the usernames you want to PROTECT/WATCH.
+	-- When one of these users gets hit, the script will try to find the attacker
+	-- and show the ATTACKER'S cooldowns.
 	ValidUsers = {
 		["cd3u"] = true,
 		["Anuribus"] = true,
 		["afa67512"] = true,
-		-- ["YourUsernameHere"] = true,
 	},
 
+	ActiveDisplaySeconds = 10,
+	RecentAttackWindow = 1.1,
+	MaxAttackDistance = 8, -- set to 5 if you want it stricter
+	MaxVisibleMoves = 6,
+
 	WindowColor = Color3.fromRGB(18, 22, 30),
-	TopbarColor = Color3.fromRGB(24, 29, 39),
+	TopbarColor = Color3.fromRGB(23, 28, 38),
 	CardColor = Color3.fromRGB(28, 34, 45),
-	OutlineColor = Color3.fromRGB(72, 84, 105),
+	OutlineColor = Color3.fromRGB(78, 92, 114),
 
 	TextColor = Color3.fromRGB(235, 240, 248),
-	SubTextColor = Color3.fromRGB(155, 168, 188),
-	AccentColor = Color3.fromRGB(120, 175, 255),
+	SubTextColor = Color3.fromRGB(156, 170, 191),
+	AccentColor = Color3.fromRGB(118, 175, 255),
 
-	BarBackColor = Color3.fromRGB(17, 21, 29),
-	BarFillColor = Color3.fromRGB(90, 145, 255),
+	BarBackColor = Color3.fromRGB(17, 22, 30),
+	BarFillColor = Color3.fromRGB(92, 148, 255),
 
 	WindowTransparency = 0.18,
 	TopbarTransparency = 0.08,
 	CardTransparency = 0.12,
-	ShadowTransparency = 0.55,
+	ShadowTransparency = 0.58,
 }
 
 --// =========================
@@ -61,11 +63,11 @@ end
 --// =========================
 local MoveStates = {}            -- [character] = { [moveName] = {LastUse, TimeStarted} }
 local CharacterSnapshots = {}    -- [character] = snapshot
-local HumanoidConnections = {}   -- [humanoid] = connection
-local LastHealthByHumanoid = {}  -- [humanoid] = last health
+local HumanoidConnections = {}   -- [humanoid] = RBXScriptConnection
+local LastHealthByHumanoid = {}  -- [humanoid] = last health number
 
-local ActiveTarget = nil         -- attacker character
-local ActiveVictim = nil         -- valid user who got attacked
+local ActiveAttacker = nil
+local ActiveVictim = nil
 local ActiveUntil = 0
 local LastReason = "Waiting for a valid user to be attacked..."
 
@@ -81,7 +83,7 @@ mainGui.Parent = guiParent
 
 local shadow = Instance.new("Frame")
 shadow.Name = "Shadow"
-shadow.Size = UDim2.new(0, 277, 0, 207)
+shadow.Size = UDim2.new(0, 282, 0, 210)
 shadow.Position = Settings.PanelPosition + UDim2.new(0, 0, 0, 4)
 shadow.BackgroundColor3 = Color3.new(0, 0, 0)
 shadow.BackgroundTransparency = Settings.ShadowTransparency
@@ -111,7 +113,7 @@ panelCorner.Parent = panel
 local panelStroke = Instance.new("UIStroke")
 panelStroke.Color = Settings.OutlineColor
 panelStroke.Thickness = 1
-panelStroke.Transparency = 0.25
+panelStroke.Transparency = 0.22
 panelStroke.Parent = panel
 
 local topbar = Instance.new("Frame")
@@ -188,7 +190,7 @@ content.Parent = panel
 
 local infoCard = Instance.new("Frame")
 infoCard.Name = "InfoCard"
-infoCard.Size = UDim2.new(1, 0, 0, 56)
+infoCard.Size = UDim2.new(1, 0, 0, 58)
 infoCard.BackgroundColor3 = Settings.CardColor
 infoCard.BackgroundTransparency = Settings.CardTransparency
 infoCard.BorderSizePixel = 0
@@ -202,14 +204,14 @@ infoCorner.Parent = infoCard
 local infoStroke = Instance.new("UIStroke")
 infoStroke.Color = Settings.OutlineColor
 infoStroke.Thickness = 1
-infoStroke.Transparency = 0.4
+infoStroke.Transparency = 0.40
 infoStroke.Parent = infoCard
 
 local statusLabel = Instance.new("TextLabel")
 statusLabel.BackgroundTransparency = 1
 statusLabel.Position = UDim2.new(0, 10, 0, 6)
 statusLabel.Size = UDim2.new(1, -20, 0, 16)
-statusLabel.Text = "Waiting for a valid user to be attacked..."
+statusLabel.Text = LastReason
 statusLabel.TextColor3 = Settings.SubTextColor
 statusLabel.TextSize = 12
 statusLabel.Font = Enum.Font.GothamMedium
@@ -219,7 +221,7 @@ statusLabel.Parent = infoCard
 
 local attackerLabel = Instance.new("TextLabel")
 attackerLabel.BackgroundTransparency = 1
-attackerLabel.Position = UDim2.new(0, 10, 0, 22)
+attackerLabel.Position = UDim2.new(0, 10, 0, 23)
 attackerLabel.Size = UDim2.new(1, -20, 0, 16)
 attackerLabel.Text = "Attacker: -"
 attackerLabel.TextColor3 = Settings.AccentColor
@@ -231,7 +233,7 @@ attackerLabel.Parent = infoCard
 
 local victimLabel = Instance.new("TextLabel")
 victimLabel.BackgroundTransparency = 1
-victimLabel.Position = UDim2.new(0, 10, 0, 38)
+victimLabel.Position = UDim2.new(0, 10, 0, 40)
 victimLabel.Size = UDim2.new(1, -20, 0, 14)
 victimLabel.Text = "Victim: -"
 victimLabel.TextColor3 = Settings.SubTextColor
@@ -244,8 +246,8 @@ victimLabel.Parent = infoCard
 local movesHolder = Instance.new("Frame")
 movesHolder.Name = "MovesHolder"
 movesHolder.BackgroundTransparency = 1
-movesHolder.Position = UDim2.new(0, 0, 0, 64)
-movesHolder.Size = UDim2.new(1, 0, 1, -64)
+movesHolder.Position = UDim2.new(0, 0, 0, 66)
+movesHolder.Size = UDim2.new(1, 0, 1, -66)
 movesHolder.ZIndex = 3
 movesHolder.Parent = content
 
@@ -276,7 +278,7 @@ local function createMoveRow(index)
 	local rowStroke = Instance.new("UIStroke")
 	rowStroke.Color = Settings.OutlineColor
 	rowStroke.Thickness = 1
-	rowStroke.Transparency = 0.5
+	rowStroke.Transparency = 0.50
 	rowStroke.Parent = row
 
 	local label = Instance.new("TextLabel")
@@ -314,9 +316,9 @@ local function createMoveRow(index)
 	barBack.ZIndex = 4
 	barBack.Parent = row
 
-	local barCorner = Instance.new("UICorner")
-	barCorner.CornerRadius = UDim.new(1, 0)
-	barCorner.Parent = barBack
+	local barBackCorner = Instance.new("UICorner")
+	barBackCorner.CornerRadius = UDim.new(1, 0)
+	barBackCorner.Parent = barBack
 
 	local fill = Instance.new("Frame")
 	fill.Name = "Fill"
@@ -428,75 +430,20 @@ local function isValidVictim(character)
 	return Settings.ValidUsers[player.Name] == true
 end
 
-local function getTargets()
-	local targets = {}
+local function getAllCharacters()
+	local characters = {}
 
 	for _, player in ipairs(Players:GetPlayers()) do
 		local character = player.Character
 		if character and character:IsA("Model") then
 			local humanoid = character:FindFirstChildOfClass("Humanoid")
 			if humanoid then
-				table.insert(targets, character)
+				table.insert(characters, character)
 			end
 		end
 	end
 
-	return targets
-end
-
-local function getMostRecentMoveElapsed(character, currentTime)
-	local charMoveStates = MoveStates[character]
-	if not charMoveStates then
-		return nil
-	end
-
-	local latestTimeStarted = nil
-
-	for _, moveState in pairs(charMoveStates) do
-		if moveState.TimeStarted and moveState.TimeStarted > 0 then
-			if latestTimeStarted == nil or moveState.TimeStarted > latestTimeStarted then
-				latestTimeStarted = moveState.TimeStarted
-			end
-		end
-	end
-
-	if not latestTimeStarted then
-		return nil
-	end
-
-	return currentTime - latestTimeStarted
-end
-
-local function findLikelyAttacker(victim, currentTime)
-	local victimRoot = victim and victim:FindFirstChild("HumanoidRootPart")
-	local bestCharacter = nil
-	local bestElapsed = math.huge
-	local bestDistance = math.huge
-
-	for _, character in ipairs(getTargets()) do
-		if character ~= victim then
-			local elapsed = getMostRecentMoveElapsed(character, currentTime)
-
-			if elapsed and elapsed <= Settings.RecentAttackWindow then
-				local distance = math.huge
-				local root = character:FindFirstChild("HumanoidRootPart")
-
-				if victimRoot and root then
-					distance = (victimRoot.Position - root.Position).Magnitude
-				end
-
-				if distance <= Settings.MaxAttackDistance then
-					if elapsed < bestElapsed or (math.abs(elapsed - bestElapsed) < 0.05 and distance < bestDistance) then
-						bestElapsed = elapsed
-						bestDistance = distance
-						bestCharacter = character
-					end
-				end
-			end
-		end
-	end
-
-	return bestCharacter
+	return characters
 end
 
 local function clearPanel()
@@ -599,8 +546,63 @@ local function buildSnapshotForCharacter(character, currentTime)
 	}
 end
 
+local function getMostRecentMoveElapsed(character, currentTime)
+	local charMoveStates = MoveStates[character]
+	if not charMoveStates then
+		return nil
+	end
+
+	local latestTimeStarted = nil
+
+	for _, moveState in pairs(charMoveStates) do
+		if moveState.TimeStarted and moveState.TimeStarted > 0 then
+			if latestTimeStarted == nil or moveState.TimeStarted > latestTimeStarted then
+				latestTimeStarted = moveState.TimeStarted
+			end
+		end
+	end
+
+	if not latestTimeStarted then
+		return nil
+	end
+
+	return currentTime - latestTimeStarted
+end
+
+local function findLikelyAttacker(victim, currentTime)
+	local victimRoot = victim and victim:FindFirstChild("HumanoidRootPart")
+	if not victimRoot then
+		return nil
+	end
+
+	local bestCharacter = nil
+	local bestElapsed = math.huge
+	local bestDistance = math.huge
+
+	for _, candidate in ipairs(getAllCharacters()) do
+		if candidate ~= victim then
+			local candidateRoot = candidate:FindFirstChild("HumanoidRootPart")
+			local elapsed = getMostRecentMoveElapsed(candidate, currentTime)
+
+			if candidateRoot and elapsed and elapsed <= Settings.RecentAttackWindow then
+				local distance = (victimRoot.Position - candidateRoot.Position).Magnitude
+
+				if distance <= Settings.MaxAttackDistance then
+					if elapsed < bestElapsed or (math.abs(elapsed - bestElapsed) < 0.05 and distance < bestDistance) then
+						bestElapsed = elapsed
+						bestDistance = distance
+						bestCharacter = candidate
+					end
+				end
+			end
+		end
+	end
+
+	return bestCharacter
+end
+
 local function setCombatTarget(attacker, victim)
-	ActiveTarget = attacker
+	ActiveAttacker = attacker
 	ActiveVictim = victim
 	ActiveUntil = tick() + Settings.ActiveDisplaySeconds
 	LastReason = "Attack detected"
@@ -655,10 +657,10 @@ syncShadow()
 --// =========================
 RunService.RenderStepped:Connect(function()
 	local currentTime = tick()
-	local targets = getTargets()
+	local characters = getAllCharacters()
 	local validCharacters = {}
 
-	for _, character in ipairs(targets) do
+	for _, character in ipairs(characters) do
 		local humanoid = character:FindFirstChildOfClass("Humanoid")
 		if not humanoid or humanoid.Health <= 0 then
 			continue
@@ -676,8 +678,8 @@ RunService.RenderStepped:Connect(function()
 			CharacterSnapshots[character] = nil
 			MoveStates[character] = nil
 
-			if ActiveTarget == character or ActiveVictim == character then
-				ActiveTarget = nil
+			if ActiveAttacker == character or ActiveVictim == character then
+				ActiveAttacker = nil
 				ActiveVictim = nil
 				ActiveUntil = 0
 				LastReason = "Waiting for a valid user to be attacked..."
@@ -685,8 +687,8 @@ RunService.RenderStepped:Connect(function()
 		end
 	end
 
-	local isActive = ActiveTarget ~= nil and currentTime <= ActiveUntil
-	local snapshot = isActive and CharacterSnapshots[ActiveTarget] or nil
+	local isActive = ActiveAttacker ~= nil and currentTime <= ActiveUntil
+	local snapshot = isActive and CharacterSnapshots[ActiveAttacker] or nil
 
 	if isActive and snapshot then
 		showMovesForSnapshot(snapshot, ActiveUntil - currentTime)
