@@ -25,7 +25,7 @@ local Settings = {
 	["afa67512"] = true,
 },
 
-	ActiveDisplaySeconds = 8,
+	ActiveDisplaySeconds = 20,
 	RecentAttackWindow = 1.25,
 	MaxVisibleMoves = 6,
 
