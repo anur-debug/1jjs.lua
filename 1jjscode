@@ -18,6 +18,13 @@ local Settings = {
 	PanelSize = UDim2.new(0, 250, 0, 185),
 	PanelPosition = UDim2.new(0, 35, 0.5, -95),
 
+	ValidUsers = {
+	[localPlayer.Name] = true, -- always track yourself
+	["Anuribus"] = true,
+	["cd3u"] = true,
+	["afa67512"] = true,
+},
+
 	ActiveDisplaySeconds = 8,
 	RecentAttackWindow = 1.25,
 	MaxVisibleMoves = 6,
@@ -275,6 +282,22 @@ local function getCharacterLabel(character)
 	return character.Name
 end
 
+local function getPlayerFromCharacter(character)
+	if not character then
+		return nil
+	end
+	return Players:GetPlayerFromCharacter(character)
+end
+
+local function isTrackedCharacter(character)
+	local player = getPlayerFromCharacter(character)
+	if not player then
+		return false
+	end
+
+	return Settings.ValidUsers[player.Name] == true
+end
+
 local function getTargets()
 	local targets = {}
 	local seen = {}
@@ -285,25 +308,20 @@ local function getTargets()
 		end
 
 		local humanoid = model:FindFirstChildOfClass("Humanoid")
-		if humanoid then
-			seen[model] = true
-			table.insert(targets, model)
+		if not humanoid then
+			return
 		end
-	end
 
-	local charactersFolder = workspace:FindFirstChild("Characters")
-	if charactersFolder then
-		for _, obj in ipairs(charactersFolder:GetChildren()) do
-			addModel(obj)
+		if not isTrackedCharacter(model) then
+			return
 		end
+
+		seen[model] = true
+		table.insert(targets, model)
 	end
 
 	for _, player in ipairs(Players:GetPlayers()) do
 		addModel(player.Character)
-	end
-
-	for _, obj in ipairs(workspace:GetChildren()) do
-		addModel(obj)
 	end
 
 	return targets
@@ -514,6 +532,11 @@ local function bindHumanoid(character)
 		return
 	end
 
+	-- ignore anyone not in the tracked username list
+	if not isTrackedCharacter(character) then
+		return
+	end
+
 	LastHealthByHumanoid[humanoid] = humanoid.Health
 
 	HumanoidConnections[humanoid] = humanoid.HealthChanged:Connect(function(newHealth)
@@ -523,13 +546,14 @@ local function bindHumanoid(character)
 		if oldHealth ~= nil and newHealth < oldHealth then
 			local localCharacter = localPlayer and localPlayer.Character
 
-			if localCharacter and character == localCharacter then
-				setCombatTarget(character, "You took damage")
-			else
-				if localPlayerRecentlyUsedMove(now, Settings.RecentAttackWindow) then
-					setCombatTarget(character, "You dealt damage")
+			if localCharacter then
+				if character == localCharacter then
+					setCombatTarget(character, "You took damage")
 				else
-					setCombatTarget(character, "Damage detected")
+					if localPlayerRecentlyUsedMove(now, Settings.RecentAttackWindow)
+						and isNearLocalPlayer(character, 40) then
+						setCombatTarget(character, "You dealt damage")
+					end
 				end
 			end
 		end
