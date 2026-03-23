@@ -18,13 +18,15 @@ local Settings = {
 	PanelSize = UDim2.new(0, 250, 0, 185),
 	PanelPosition = UDim2.new(0, 35, 0.5, -95),
 
-	ActiveDisplaySeconds = 8, -- how long to keep values visible after someone gets hit
+	ActiveDisplaySeconds = 8,
+	RecentAttackWindow = 1.25,
 	MaxVisibleMoves = 6,
 
 	CooldownFillColor = Color3.fromRGB(255, 70, 70),
 	CooldownBackgroundColor = Color3.fromRGB(35, 35, 35),
 	PanelBackgroundColor = Color3.fromRGB(20, 20, 20),
 	PanelOutlineColor = Color3.fromRGB(0, 0, 0),
+	TitleBarColor = Color3.fromRGB(28, 28, 28),
 	TitleColor = Color3.fromRGB(255, 255, 255),
 	TextColor = Color3.fromRGB(235, 235, 235),
 	MutedTextColor = Color3.fromRGB(160, 160, 160),
@@ -35,14 +37,24 @@ local Settings = {
 }
 
 --// =========================
+--// CLEANUP OLD UI
+--// =========================
+local oldGui = guiParent:FindFirstChild("CooldownTracker_GUI")
+if oldGui then
+	oldGui:Destroy()
+end
+
+--// =========================
 --// STATE
 --// =========================
-local MoveStates = {}
-local HealthStates = {}
-local CharacterSnapshots = {}
+local MoveStates = {}           -- [character] = { [moveName] = { LastUse = 0, TimeStarted = 0 } }
+local CharacterSnapshots = {}   -- [character] = snapshot
+local HumanoidConnections = {}  -- [humanoid] = connection
+local LastHealthByHumanoid = {} -- [humanoid] = health
 
-local ActiveTargetName = nil
+local ActiveTarget = nil
 local ActiveUntil = 0
+local LastCombatReason = "Waiting for combat..."
 
 --// =========================
 --// GUI SETUP
@@ -67,16 +79,17 @@ local panelCorner = Instance.new("UICorner")
 panelCorner.CornerRadius = UDim.new(0, 8)
 panelCorner.Parent = panel
 
-local stroke = Instance.new("UIStroke")
-stroke.Color = Settings.PanelOutlineColor
-stroke.Thickness = 1
-stroke.Parent = panel
+local panelStroke = Instance.new("UIStroke")
+panelStroke.Color = Settings.PanelOutlineColor
+panelStroke.Thickness = 1
+panelStroke.Parent = panel
 
 local titleBar = Instance.new("Frame")
 titleBar.Name = "TitleBar"
 titleBar.Size = UDim2.new(1, 0, 0, 28)
-titleBar.BackgroundColor3 = Color3.fromRGB(28, 28, 28)
+titleBar.BackgroundColor3 = Settings.TitleBarColor
 titleBar.BorderSizePixel = 0
+titleBar.Active = true
 titleBar.Parent = panel
 
 local titleCorner = Instance.new("UICorner")
@@ -84,7 +97,7 @@ titleCorner.CornerRadius = UDim.new(0, 8)
 titleCorner.Parent = titleBar
 
 local titleMask = Instance.new("Frame")
-titleMask.BackgroundColor3 = Color3.fromRGB(28, 28, 28)
+titleMask.BackgroundColor3 = Settings.TitleBarColor
 titleMask.BorderSizePixel = 0
 titleMask.Position = UDim2.new(0, 0, 0.5, 0)
 titleMask.Size = UDim2.new(1, 0, 0.5, 0)
@@ -253,20 +266,44 @@ local function getAttribute(instance, attr, default)
 	return default
 end
 
+local function getCharacterLabel(character)
+	local player = Players:GetPlayerFromCharacter(character)
+	if player then
+		return player.Name
+	end
+
+	return character.Name
+end
+
 local function getTargets()
 	local targets = {}
-	local charactersFolder = workspace:FindFirstChild("Characters")
+	local seen = {}
 
+	local function addModel(model)
+		if not model or not model:IsA("Model") or seen[model] then
+			return
+		end
+
+		local humanoid = model:FindFirstChildOfClass("Humanoid")
+		if humanoid then
+			seen[model] = true
+			table.insert(targets, model)
+		end
+	end
+
+	local charactersFolder = workspace:FindFirstChild("Characters")
 	if charactersFolder then
 		for _, obj in ipairs(charactersFolder:GetChildren()) do
-			table.insert(targets, obj)
+			addModel(obj)
 		end
-	else
-		for _, obj in ipairs(workspace:GetChildren()) do
-			if obj:IsA("Model") and obj:FindFirstChild("Humanoid") then
-				table.insert(targets, obj)
-			end
-		end
+	end
+
+	for _, player in ipairs(Players:GetPlayers()) do
+		addModel(player.Character)
+	end
+
+	for _, obj in ipairs(workspace:GetChildren()) do
+		addModel(obj)
 	end
 
 	return targets
@@ -294,10 +331,10 @@ local function clearPanel()
 	end
 end
 
-local function showMovesForCharacter(characterName, snapshot, remainingActiveTime)
-	statusLabel.Text = string.format("Combat active (%.1fs)", math.max(remainingActiveTime, 0))
+local function showMovesForSnapshot(snapshot, remainingActiveTime)
+	statusLabel.Text = string.format("%s (%.1fs)", LastCombatReason, math.max(remainingActiveTime, 0))
 	statusLabel.TextColor3 = Settings.TextColor
-	targetLabel.Text = "Target: " .. characterName
+	targetLabel.Text = "Target: " .. snapshot.Label
 
 	local moves = snapshot.Moves or {}
 
@@ -339,9 +376,12 @@ local function showMovesForCharacter(characterName, snapshot, remainingActiveTim
 end
 
 local function buildSnapshotForCharacter(character, currentTime)
-	local charName = character.Name
 	local moveset = character:FindFirstChild("Moveset")
 	local moves = {}
+
+	if not MoveStates[character] then
+		MoveStates[character] = {}
+	end
 
 	if moveset then
 		for idx, moveInstance in ipairs(moveset:GetChildren()) do
@@ -349,8 +389,8 @@ local function buildSnapshotForCharacter(character, currentTime)
 			local cooldownDuration = tonumber(moveInstance.Value) or 0
 			local lastUseId = getAttribute(moveInstance, "LastUse", 0)
 
-			local stateKey = charName .. "_" .. moveInstance.Name
-			local moveState = MoveStates[stateKey] or {
+			local charMoveStates = MoveStates[character]
+			local moveState = charMoveStates[moveInstance.Name] or {
 				LastUse = 0,
 				TimeStarted = 0,
 			}
@@ -360,7 +400,7 @@ local function buildSnapshotForCharacter(character, currentTime)
 				moveState.TimeStarted = currentTime
 			end
 
-			MoveStates[stateKey] = moveState
+			charMoveStates[moveInstance.Name] = moveState
 
 			local timePassed = currentTime - moveState.TimeStarted
 			local remainingTime = 0
@@ -384,8 +424,80 @@ local function buildSnapshotForCharacter(character, currentTime)
 
 	return {
 		Character = character,
+		Label = getCharacterLabel(character),
 		Moves = moves,
 	}
+end
+
+local function setCombatTarget(character, reason)
+	ActiveTarget = character
+	ActiveUntil = tick() + Settings.ActiveDisplaySeconds
+	LastCombatReason = reason or "Combat active"
+end
+
+local function localPlayerRecentlyUsedMove(currentTime, window)
+	local localCharacter = localPlayer and localPlayer.Character
+	if not localCharacter then
+		return false
+	end
+
+	local charMoveStates = MoveStates[localCharacter]
+	if not charMoveStates then
+		return false
+	end
+
+	for _, moveState in pairs(charMoveStates) do
+		if moveState.TimeStarted > 0 and (currentTime - moveState.TimeStarted) <= window then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function bindHumanoid(character)
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if not humanoid or HumanoidConnections[humanoid] then
+		return
+	end
+
+	LastHealthByHumanoid[humanoid] = humanoid.Health
+
+	HumanoidConnections[humanoid] = humanoid.HealthChanged:Connect(function(newHealth)
+		local oldHealth = LastHealthByHumanoid[humanoid]
+		local now = tick()
+
+		if oldHealth ~= nil and newHealth < oldHealth then
+			local localCharacter = localPlayer and localPlayer.Character
+
+			if localCharacter and character == localCharacter then
+				setCombatTarget(character, "You took damage")
+			else
+				if localPlayerRecentlyUsedMove(now, Settings.RecentAttackWindow) then
+					setCombatTarget(character, "You dealt damage")
+				else
+					setCombatTarget(character, "Damage detected")
+				end
+			end
+		end
+
+		LastHealthByHumanoid[humanoid] = newHealth
+	end)
+end
+
+local function cleanupHumanoidConnections(validCharacters)
+	for humanoid, connection in pairs(HumanoidConnections) do
+		local character = humanoid.Parent
+
+		if not humanoid.Parent or not character or not validCharacters[character] then
+			if connection then
+				connection:Disconnect()
+			end
+
+			HumanoidConnections[humanoid] = nil
+			LastHealthByHumanoid[humanoid] = nil
+		end
+	end
 end
 
 clearPanel()
@@ -396,65 +508,43 @@ clearPanel()
 RunService.RenderStepped:Connect(function()
 	local currentTime = tick()
 	local targets = getTargets()
-	local seenCharacters = {}
+	local validCharacters = {}
 
 	for _, character in ipairs(targets) do
 		if not character:IsA("Model") then
 			continue
 		end
 
-		local humanoid = character:FindFirstChild("Humanoid")
-		local root = character:FindFirstChild("HumanoidRootPart")
-
-		if not humanoid or not root or humanoid.Health <= 0 then
+		local humanoid = character:FindFirstChildOfClass("Humanoid")
+		if not humanoid or humanoid.Health <= 0 then
 			continue
 		end
 
-		local charName = character.Name
-		seenCharacters[charName] = true
-
-		-- Always keep move states updated in the background,
-		-- even if panel is currently idle.
-		CharacterSnapshots[charName] = buildSnapshotForCharacter(character, currentTime)
-
-		-- Detect combat when health drops.
-		local currentHealth = humanoid.Health
-		local previousHealth = HealthStates[charName]
-
-		if previousHealth ~= nil and currentHealth < previousHealth then
-			ActiveTargetName = charName
-			ActiveUntil = currentTime + Settings.ActiveDisplaySeconds
-		end
-
-		HealthStates[charName] = currentHealth
+		validCharacters[character] = true
+		bindHumanoid(character)
+		CharacterSnapshots[character] = buildSnapshotForCharacter(character, currentTime)
 	end
 
-	-- Cleanup removed characters
-	for charName in pairs(HealthStates) do
-		if not seenCharacters[charName] then
-			HealthStates[charName] = nil
-			CharacterSnapshots[charName] = nil
+	cleanupHumanoidConnections(validCharacters)
 
-			for moveStateKey in pairs(MoveStates) do
-				if string.sub(moveStateKey, 1, #charName + 1) == (charName .. "_") then
-					MoveStates[moveStateKey] = nil
-				end
-			end
+	for character in pairs(CharacterSnapshots) do
+		if not validCharacters[character] then
+			CharacterSnapshots[character] = nil
+			MoveStates[character] = nil
 
-			if ActiveTargetName == charName then
-				ActiveTargetName = nil
+			if ActiveTarget == character then
+				ActiveTarget = nil
 				ActiveUntil = 0
+				LastCombatReason = "Waiting for combat..."
 			end
 		end
 	end
 
-	-- Panel logic:
-	-- visible all the time, but only shows values when there was recent damage.
-	local isActive = ActiveTargetName ~= nil and currentTime <= ActiveUntil
-	local snapshot = isActive and CharacterSnapshots[ActiveTargetName] or nil
+	local isActive = ActiveTarget ~= nil and currentTime <= ActiveUntil
+	local snapshot = isActive and CharacterSnapshots[ActiveTarget] or nil
 
 	if isActive and snapshot then
-		showMovesForCharacter(ActiveTargetName, snapshot, ActiveUntil - currentTime)
+		showMovesForSnapshot(snapshot, ActiveUntil - currentTime)
 	else
 		clearPanel()
 	end
