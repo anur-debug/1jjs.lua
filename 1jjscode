@@ -17,7 +17,7 @@ end
 local Settings = {
 	PanelSize = UDim2.new(0, 250, 0, 185),
 	PanelPosition = UDim2.new(0, 35, 0.5, -95),
-	MaxDealDistance = 35,
+
 	ActiveDisplaySeconds = 8,
 	RecentAttackWindow = 1.25,
 	MaxVisibleMoves = 6,
@@ -309,6 +309,59 @@ local function getTargets()
 	return targets
 end
 
+local function localPlayerRecentlyUsedMove(currentTime, window)
+	local localCharacter = localPlayer and localPlayer.Character
+	if not localCharacter then
+		return false
+	end
+
+	local prefix = localCharacter.Name .. "_"
+
+	for stateKey, moveState in pairs(MoveStates) do
+		if string.sub(stateKey, 1, #prefix) == prefix then
+			if moveState.TimeStarted > 0 and (currentTime - moveState.TimeStarted) <= window then
+				return true
+			end
+		end
+	end
+
+	return false
+end
+
+local function bindHumanoid(character)
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if not humanoid or HumanoidConnections[humanoid] then
+		return
+	end
+
+	LastHealthByHumanoid[humanoid] = humanoid.Health
+
+	HumanoidConnections[humanoid] = humanoid.HealthChanged:Connect(function(newHealth)
+		local oldHealth = LastHealthByHumanoid[humanoid]
+		local now = tick()
+
+		if oldHealth ~= nil and newHealth < oldHealth then
+			local localCharacter = localPlayer and localPlayer.Character
+
+			if localCharacter then
+				if character == localCharacter then
+					-- you took damage
+					setCombatTarget(character, "You took damage")
+				else
+					-- only count it if YOU recently used a move
+					-- and the damaged character is near you
+					if localPlayerRecentlyUsedMove(now, Settings.RecentAttackWindow)
+						and isNearLocalPlayer(character, 40) then
+						setCombatTarget(character, "You dealt damage")
+					end
+				end
+			end
+		end
+
+		LastHealthByHumanoid[humanoid] = newHealth
+	end)
+end
+
 local function clearPanel()
 	statusLabel.Text = "Waiting for combat..."
 	statusLabel.TextColor3 = Settings.MutedTextColor
@@ -470,28 +523,13 @@ local function bindHumanoid(character)
 		if oldHealth ~= nil and newHealth < oldHealth then
 			local localCharacter = localPlayer and localPlayer.Character
 
-			-- only care about damage involving the local player
-			if localCharacter then
-				if character == localCharacter then
-					-- you took damage
-					setCombatTarget(character, "You took damage")
+			if localCharacter and character == localCharacter then
+				setCombatTarget(character, "You took damage")
+			else
+				if localPlayerRecentlyUsedMove(now, Settings.RecentAttackWindow) then
+					setCombatTarget(character, "You dealt damage")
 				else
-					-- only count this as dealt damage if YOU recently used a move
-					if localPlayerRecentlyUsedMove(now, Settings.RecentAttackWindow) then
-						local localRoot = localCharacter:FindFirstChild("HumanoidRootPart")
-						local targetRoot = character:FindFirstChild("HumanoidRootPart")
-
-						-- optional distance check so random damage across the map doesn't trigger
-						if localRoot and targetRoot then
-							local distance = (localRoot.Position - targetRoot.Position).Magnitude
-							if distance <= Settings.MaxDealDistance then
-								setCombatTarget(character, "You dealt damage")
-							end
-						else
-							-- fallback if root parts are missing
-							setCombatTarget(character, "You dealt damage")
-						end
-					end
+					setCombatTarget(character, "Damage detected")
 				end
 			end
 		end
