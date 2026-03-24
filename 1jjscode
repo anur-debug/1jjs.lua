@@ -29,10 +29,21 @@ local Settings = {
     MaxAttackDistance = 24,
     HitResolveWindow = 0.45,
 
-    local PendingHit = false
-    local PendingHitUntil = 0
-    local PendingBestAttacker = nil
-    local PendingBestScore = -math.huge
+    Bg = Color3.fromRGB(20, 24, 31),
+    Top = Color3.fromRGB(28, 34, 44),
+    Card = Color3.fromRGB(34, 41, 53),
+    Stroke = Color3.fromRGB(78, 92, 114),
+    Text = Color3.fromRGB(235, 240, 248),
+    Sub = Color3.fromRGB(155, 170, 190),
+    Accent = Color3.fromRGB(110, 170, 255),
+    BarBack = Color3.fromRGB(15, 19, 27),
+    BarFill = Color3.fromRGB(86, 145, 255),
+}
+
+local PendingHit = false
+local PendingHitUntil = 0
+local PendingBestAttacker = nil
+local PendingBestScore = -math.huge
 
     Bg = Color3.fromRGB(20, 24, 31),
     Top = Color3.fromRGB(28, 34, 44),
@@ -520,20 +531,21 @@ local function BindCharacter(character)
     Status.Text = "Loaded. Waiting for you to be hit..."
 
     HealthConnection = humanoid.HealthChanged:Connect(function(newHealth)
-    local oldHealth = LastHealth
-    LastHealth = newHealth
+        local oldHealth = LastHealth
+        LastHealth = newHealth
 
-    if oldHealth and newHealth < oldHealth then
-        local now = tick()
+        if oldHealth and newHealth < oldHealth then
+            local now = tick()
 
-        PendingHit = true
-        PendingHitUntil = now + Settings.HitResolveWindow
-        PendingBestAttacker = nil
-        PendingBestScore = -math.huge
+            PendingHit = true
+            PendingHitUntil = now + Settings.HitResolveWindow
+            PendingBestAttacker = nil
+            PendingBestScore = -math.huge
 
-        Status.Text = "You were hit. Resolving attacker..."
-    end
-end)
+            Status.Text = "You were hit. Resolving attacker..."
+        end
+    end)
+end
 
 if LocalPlayer.Character then
     BindCharacter(LocalPlayer.Character)
