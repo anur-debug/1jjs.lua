@@ -1,612 +1,402 @@
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
+local Camera = workspace.CurrentCamera
 local CoreGui = game:GetService("CoreGui")
 
+-- Determine where to attach the UI
+-- If this is an Exploit (Krampus, Synapse etc.), CoreGui is often used.
+-- If this is a normal LocalScript, PlayerGui is preferred.
 local localPlayer = Players.LocalPlayer
-local guiParent = (localPlayer and localPlayer:FindFirstChild("PlayerGui")) or CoreGui
+local guiParent = localPlayer and localPlayer:FindFirstChild("PlayerGui") or CoreGui
 
 if not guiParent then
-	warn("Could not find suitable GUI parent. Tracker UI might not be visible.")
-	return
+    warn("Could not find suitable GUI parent. Tracker UI might not be visible.")
 end
 
---// =========================
---// CONFIG
---// =========================
-local Settings = {
-	PanelSize = UDim2.new(0, 250, 0, 185),
-	PanelPosition = UDim2.new(0, 35, 0.5, -95),
-
-	-- Only these usernames count as victims to watch.
-	ValidUsers = {
-		["cd3u"] = true,
-		["Anuribus"] = true,
-		["afa67512"] = true,
-	},
-
-	-- Tight attacker check near the valid victim.
-	MaxAttackDistance = 5,
-	RecentAttackWindow = 1.35,
-	ActiveDisplaySeconds = 8,
-	MaxVisibleMoves = 6,
-
-	CooldownFillColor = Color3.fromRGB(255, 70, 70),
-	CooldownBackgroundColor = Color3.fromRGB(35, 35, 35),
-	PanelBackgroundColor = Color3.fromRGB(20, 20, 20),
-	PanelOutlineColor = Color3.fromRGB(0, 0, 0),
-	TitleBarColor = Color3.fromRGB(28, 28, 28),
-	TitleColor = Color3.fromRGB(255, 255, 255),
-	TextColor = Color3.fromRGB(235, 235, 235),
-	MutedTextColor = Color3.fromRGB(160, 160, 160),
-	AccentColor = Color3.fromRGB(120, 180, 255),
-
-	BarHeight = 20,
-	BarSpacing = 4,
-}
-
---// =========================
---// CLEANUP OLD UI
---// =========================
-local oldGui = guiParent:FindFirstChild("CooldownTracker_GUI")
-if oldGui then
-	oldGui:Destroy()
-end
-
---// =========================
---// STATE
---// =========================
-local MoveStates = {}            -- [character] = { [moveName] = { LastUse = 0, TimeStarted = 0 } }
-local CharacterSnapshots = {}    -- [character] = snapshot
-local HumanoidConnections = {}   -- [humanoid] = connection
-local LastHealthByHumanoid = {}  -- [humanoid] = health
-
-local ActiveTarget = nil         -- attacker
-local ActiveVictim = nil         -- valid user who got hit
-local ActiveUntil = 0
-local LastCombatReason = "Waiting for a valid user to be attacked..."
-
---// =========================
---// GUI SETUP
---// =========================
+-- Create the main ScreenGui container
+-- ResetOnSpawn prevents the GUI from wiping if the LocalPlayer dies
 local mainGui = Instance.new("ScreenGui")
 mainGui.Name = "CooldownTracker_GUI"
 mainGui.ResetOnSpawn = false
 mainGui.IgnoreGuiInset = true
 mainGui.Parent = guiParent
 
-local panel = Instance.new("Frame")
-panel.Name = "TrackerPanel"
-panel.Size = Settings.PanelSize
-panel.Position = Settings.PanelPosition
-panel.BackgroundColor3 = Settings.PanelBackgroundColor
-panel.BorderSizePixel = 1
-panel.BorderColor3 = Settings.PanelOutlineColor
-panel.Active = true
-panel.Parent = mainGui
+local renderConnection -- Will hold the RenderStepped connection
 
-local panelCorner = Instance.new("UICorner")
-panelCorner.CornerRadius = UDim.new(0, 8)
-panelCorner.Parent = panel
+-- Configuration 
+local Settings = {
+    DrawCooldowns = true,
+    CooldownFillColor = Color3.fromRGB(60, 160, 255),
+    CooldownBackgroundColor = Color3.fromRGB(15, 20, 30),
+    TextColor = Color3.fromRGB(230, 240, 255),
+    BoxOutlineColor = Color3.fromRGB(30, 40, 60),
+    BarSpacing = 2,
+    MaxRenderDistance = 100 -- Only show cooldowns for characters within this distance
+}
 
-local panelStroke = Instance.new("UIStroke")
-panelStroke.Color = Settings.PanelOutlineColor
-panelStroke.Thickness = 1
-panelStroke.Parent = panel
+-- Initialize UI Library
+local Library, Notifications, Themes = loadstring(game:HttpGet("https://raw.githubusercontent.com/i77lhm/Libraries/refs/heads/main/Bbot/Library.lua"))()
 
-local titleBar = Instance.new("Frame")
-titleBar.Name = "TitleBar"
-titleBar.Size = UDim2.new(1, 0, 0, 28)
-titleBar.BackgroundColor3 = Settings.TitleBarColor
-titleBar.BorderSizePixel = 0
-titleBar.Active = true
-titleBar.Parent = panel
+local Window = Library:Window({name = "Cooldown Tracker"})
+local Tabs = {
+    Main = Window:Tab({Name = "Settings"})
+}
 
-local titleCorner = Instance.new("UICorner")
-titleCorner.CornerRadius = UDim.new(0, 8)
-titleCorner.Parent = titleBar
+local Section = Tabs.Main:Section({Name = "Visuals & Settings", Side = "Left"})
+local MainToggle = Section:Toggle({Name = "Draw Cooldowns", Default = true, Callback = function(bool)
+    Settings.DrawCooldowns = bool
+end})
 
-local titleMask = Instance.new("Frame")
-titleMask.BackgroundColor3 = Settings.TitleBarColor
-titleMask.BorderSizePixel = 0
-titleMask.Position = UDim2.new(0, 0, 0.5, 0)
-titleMask.Size = UDim2.new(1, 0, 0.5, 0)
-titleMask.Parent = titleBar
+MainToggle:Colorpicker({Name = "Fill Color", Default = Settings.CooldownFillColor, Callback = function(color)
+    Settings.CooldownFillColor = color
+end})
 
-local titleLabel = Instance.new("TextLabel")
-titleLabel.BackgroundTransparency = 1
-titleLabel.Size = UDim2.new(1, -10, 1, 0)
-titleLabel.Position = UDim2.new(0, 10, 0, 0)
-titleLabel.Text = "Cooldown Tracker"
-titleLabel.TextColor3 = Settings.TitleColor
-titleLabel.TextSize = 16
-titleLabel.Font = Enum.Font.Code
-titleLabel.TextXAlignment = Enum.TextXAlignment.Left
-titleLabel.Parent = titleBar
+MainToggle:Colorpicker({Name = "Background Color", Default = Settings.CooldownBackgroundColor, Callback = function(color)
+    Settings.CooldownBackgroundColor = color
+end})
 
-local content = Instance.new("Frame")
-content.Name = "Content"
-content.BackgroundTransparency = 1
-content.Position = UDim2.new(0, 8, 0, 34)
-content.Size = UDim2.new(1, -16, 1, -42)
-content.Parent = panel
+MainToggle:Colorpicker({Name = "Text Color", Default = Settings.TextColor, Callback = function(color)
+    Settings.TextColor = color
+end})
 
-local statusLabel = Instance.new("TextLabel")
-statusLabel.Name = "Status"
-statusLabel.BackgroundTransparency = 1
-statusLabel.Size = UDim2.new(1, 0, 0, 18)
-statusLabel.Position = UDim2.new(0, 0, 0, 0)
-statusLabel.Text = "Waiting for a valid user to be attacked..."
-statusLabel.TextColor3 = Settings.MutedTextColor
-statusLabel.TextSize = 13
-statusLabel.Font = Enum.Font.Code
-statusLabel.TextXAlignment = Enum.TextXAlignment.Left
-statusLabel.Parent = content
+MainToggle:Colorpicker({Name = "Box Outline Color", Default = Settings.BoxOutlineColor, Callback = function(color)
+    Settings.BoxOutlineColor = color
+end})
 
-local targetLabel = Instance.new("TextLabel")
-targetLabel.Name = "Target"
-targetLabel.BackgroundTransparency = 1
-targetLabel.Size = UDim2.new(1, 0, 0, 18)
-targetLabel.Position = UDim2.new(0, 0, 0, 18)
-targetLabel.Text = ""
-targetLabel.TextColor3 = Settings.AccentColor
-targetLabel.TextSize = 13
-targetLabel.Font = Enum.Font.Code
-targetLabel.TextXAlignment = Enum.TextXAlignment.Left
-targetLabel.Parent = content
+Section:Slider({Name = "Bar Spacing", Default = 2, Min = 0, Max = 10, Callback = function(val)
+    Settings.BarSpacing = val
+end})
 
-local movesHolder = Instance.new("Frame")
-movesHolder.Name = "MovesHolder"
-movesHolder.BackgroundTransparency = 1
-movesHolder.Position = UDim2.new(0, 0, 0, 42)
-movesHolder.Size = UDim2.new(1, 0, 1, -42)
-movesHolder.Parent = content
+Section:Slider({Name = "Max Render Distance", Default = 100, Min = 10, Max = 1000, Callback = function(val)
+    Settings.MaxRenderDistance = val
+end})
 
-local listLayout = Instance.new("UIListLayout")
-listLayout.FillDirection = Enum.FillDirection.Vertical
-listLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
-listLayout.SortOrder = Enum.SortOrder.LayoutOrder
-listLayout.Padding = UDim.new(0, Settings.BarSpacing)
-listLayout.Parent = movesHolder
+Section:Button({Name = "Uninject", Callback = function()
+    if renderConnection then
+        renderConnection:Disconnect()
+    end
+    if mainGui then
+        mainGui:Destroy()
+    end
+    -- Some libraries have an Unload function, otherwise we just destroy the CoreGui
+    if Library.Unload then
+        pcall(function() Library:Unload() end)
+    else
+        for _, gui in ipairs(CoreGui:GetChildren()) do
+            if gui.Name == "nebula" or gui:FindFirstChild("Main") then 
+                -- We try to clean up the UI lib if possible, but the game UI will be destroyed automatically by reset
+            end
+        end
+    end
+end})
 
-local MoveRows = {}
+Library:Configs(Window)
 
-local function createMoveRow(index)
-	local row = Instance.new("Frame")
-	row.Name = "MoveRow_" .. index
-	row.Size = UDim2.new(1, 0, 0, Settings.BarHeight)
-	row.BackgroundColor3 = Settings.CooldownBackgroundColor
-	row.BorderSizePixel = 0
-	row.Visible = false
-	row.Parent = movesHolder
-
-	local rowCorner = Instance.new("UICorner")
-	rowCorner.CornerRadius = UDim.new(0, 5)
-	rowCorner.Parent = row
-
-	local fill = Instance.new("Frame")
-	fill.Name = "Fill"
-	fill.AnchorPoint = Vector2.new(1, 0)
-	fill.Position = UDim2.new(1, 0, 0, 0)
-	fill.Size = UDim2.new(0, 0, 1, 0)
-	fill.BackgroundColor3 = Settings.CooldownFillColor
-	fill.BorderSizePixel = 0
-	fill.Parent = row
-
-	local fillCorner = Instance.new("UICorner")
-	fillCorner.CornerRadius = UDim.new(0, 5)
-	fillCorner.Parent = fill
-
-	local label = Instance.new("TextLabel")
-	label.Name = "Label"
-	label.BackgroundTransparency = 1
-	label.Size = UDim2.new(1, -10, 1, 0)
-	label.Position = UDim2.new(0, 8, 0, 0)
-	label.Text = ""
-	label.TextColor3 = Settings.TextColor
-	label.TextSize = 13
-	label.Font = Enum.Font.Code
-	label.TextXAlignment = Enum.TextXAlignment.Left
-	label.Parent = row
-
-	return row
+for index, value in pairs(Themes.preset) do 
+    pcall(function()
+        Library:RefreshTheme(index, value)
+    end)
 end
 
-for i = 1, Settings.MaxVisibleMoves do
-	MoveRows[i] = createMoveRow(i)
+-- Cache for GUI base containers for each character
+local CharacterGuis = {}
+
+-- Store the state of moves across frames to track cooldowns
+local MoveStates = {}
+
+-- Helper to safely get an attribute
+local function GetAttribute(instance, attr, default)
+    if not instance then return default end
+    local val = instance:GetAttribute(attr)
+    if val ~= nil then return val end
+    return default
 end
 
---// =========================
---// DRAGGING
---// =========================
-local dragging = false
-local dragInput = nil
-local dragStart = nil
-local startPos = nil
+-- Structure creation for a single move UI
+local function CreateMoveUI(characterName, moveIndex)
+    local container = Instance.new("Frame")
+    container.Name = characterName .. "_Move_" .. moveIndex
+    container.BackgroundColor3 = Settings.BoxOutlineColor
+    container.BackgroundTransparency = 0.3
+    container.BorderSizePixel = 1
+    container.BorderColor3 = Settings.BoxOutlineColor
+    
+    local bg = Instance.new("Frame")
+    bg.Name = "Background"
+    bg.Size = UDim2.new(1, 0, 1, 0)
+    bg.BackgroundColor3 = Settings.CooldownBackgroundColor
+    bg.BackgroundTransparency = 0.5
+    bg.BorderSizePixel = 0
+    bg.Parent = container
+    
+    -- Fill animates from right to left based on `ware.lua` original sizing logic
+    local fill = Instance.new("Frame")
+    fill.Name = "Fill"
+    fill.AnchorPoint = Vector2.new(1, 0)
+    fill.Position = UDim2.new(1, 0, 0, 0)
+    fill.Size = UDim2.new(0, 0, 1, 0)
+    fill.BackgroundColor3 = Settings.CooldownFillColor
+    fill.BorderSizePixel = 0
+    fill.Parent = container
+    
+    local textLabel = Instance.new("TextLabel")
+    textLabel.Name = "Label"
+    textLabel.Size = UDim2.new(1, 0, 1, 0)
+    textLabel.BackgroundTransparency = 1
+    textLabel.Text = "Move"
+    textLabel.TextColor3 = Settings.TextColor
+    textLabel.TextStrokeTransparency = 0.5
+    textLabel.TextScaled = true
+    textLabel.Font = Enum.Font.Code
+    textLabel.Parent = container
 
-local function updateDrag(input)
-	local delta = input.Position - dragStart
-	panel.Position = UDim2.new(
-		startPos.X.Scale,
-		startPos.X.Offset + delta.X,
-		startPos.Y.Scale,
-		startPos.Y.Offset + delta.Y
-	)
+    container.Parent = mainGui
+    return container
 end
 
-titleBar.InputBegan:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-		dragging = true
-		dragStart = input.Position
-		startPos = panel.Position
+-- Structure creation for the Ultimate Bar
+local function CreateUltUI(characterName)
+    local container = Instance.new("Frame")
+    container.Name = characterName .. "_Ult"
+    container.BackgroundColor3 = Settings.BoxOutlineColor
+    container.BackgroundTransparency = 0.3
+    container.BorderSizePixel = 1
+    container.BorderColor3 = Settings.BoxOutlineColor
+    
+    local bg = Instance.new("Frame")
+    bg.Name = "Background"
+    bg.Size = UDim2.new(1, 0, 1, 0)
+    bg.BackgroundColor3 = Settings.CooldownBackgroundColor
+    bg.BackgroundTransparency = 0.5
+    bg.BorderSizePixel = 0
+    bg.Parent = container
+    
+    local fill = Instance.new("Frame")
+    fill.Name = "Fill"
+    fill.AnchorPoint = Vector2.new(0, 1) -- Bottom up fill
+    fill.Position = UDim2.new(0, 0, 1, 0)
+    fill.Size = UDim2.new(1, 0, 0, 0)
+    fill.BackgroundColor3 = Color3.fromRGB(200, 230, 255) -- Bright whitish-blue
+    fill.BorderSizePixel = 0
+    fill.Parent = container
 
-		input.Changed:Connect(function()
-			if input.UserInputState == Enum.UserInputState.End then
-				dragging = false
-			end
-		end)
-	end
-end)
-
-titleBar.InputChanged:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-		dragInput = input
-	end
-end)
-
-UserInputService.InputChanged:Connect(function(input)
-	if dragging and input == dragInput then
-		updateDrag(input)
-	end
-end)
-
---// =========================
---// HELPERS
---// =========================
-local function getAttribute(instance, attr, default)
-	if not instance then
-		return default
-	end
-
-	local value = instance:GetAttribute(attr)
-	if value ~= nil then
-		return value
-	end
-
-	return default
+    container.Parent = mainGui
+    return container
 end
 
-local function getPlayerFromCharacter(character)
-	if not character then
-		return nil
-	end
-
-	return Players:GetPlayerFromCharacter(character)
-end
-
-local function getCharacterLabel(character)
-	local player = getPlayerFromCharacter(character)
-	if player then
-		return player.Name
-	end
-
-	return character.Name
-end
-
-local function isValidVictim(character)
-	local player = getPlayerFromCharacter(character)
-	if not player then
-		return false
-	end
-
-	return Settings.ValidUsers[player.Name] == true
-end
-
-local function getTargets()
-	local targets = {}
-	local seen = {}
-
-	local function addModel(model)
-		if not model or not model:IsA("Model") or seen[model] then
-			return
-		end
-
-		local humanoid = model:FindFirstChildOfClass("Humanoid")
-		if humanoid then
-			seen[model] = true
-			table.insert(targets, model)
-		end
-	end
-
-	local charactersFolder = workspace:FindFirstChild("Characters")
-	if charactersFolder then
-		for _, obj in ipairs(charactersFolder:GetChildren()) do
-			addModel(obj)
-		end
-	end
-
-	for _, player in ipairs(Players:GetPlayers()) do
-		addModel(player.Character)
-	end
-
-	for _, obj in ipairs(workspace:GetChildren()) do
-		addModel(obj)
-	end
-
-	return targets
-end
-
-local function clearPanel()
-	statusLabel.Text = "Waiting for a valid user to be attacked..."
-	statusLabel.TextColor3 = Settings.MutedTextColor
-	targetLabel.Text = ""
-
-	for _, row in ipairs(MoveRows) do
-		row.Visible = false
-
-		local fill = row:FindFirstChild("Fill")
-		local label = row:FindFirstChild("Label")
-
-		if fill then
-			fill.Visible = false
-			fill.Size = UDim2.new(0, 0, 1, 0)
-		end
-
-		if label then
-			label.Text = ""
-		end
-	end
-end
-
-local function showMovesForSnapshot(snapshot, remainingActiveTime)
-	local victimName = ActiveVictim and getCharacterLabel(ActiveVictim) or "Unknown"
-	statusLabel.Text = string.format("%s (%.1fs)", victimName .. " was hit", math.max(remainingActiveTime, 0))
-	statusLabel.TextColor3 = Settings.TextColor
-	targetLabel.Text = "Target: " .. snapshot.Label
-
-	local moves = snapshot.Moves or {}
-
-	for i, row in ipairs(MoveRows) do
-		local move = moves[i]
-		local fill = row:FindFirstChild("Fill")
-		local label = row:FindFirstChild("Label")
-
-		if move then
-			row.Visible = true
-
-			if label then
-				label.Text = move.Name
-			end
-
-			if fill then
-				if move.RemainingTime > 0 and move.Cooldown > 0 then
-					local ratio = math.clamp(move.RemainingTime / move.Cooldown, 0, 1)
-					fill.Visible = true
-					fill.Size = UDim2.new(ratio, 0, 1, 0)
-				else
-					fill.Visible = false
-					fill.Size = UDim2.new(0, 0, 1, 0)
-				end
-			end
-		else
-			row.Visible = false
-
-			if label then
-				label.Text = ""
-			end
-
-			if fill then
-				fill.Visible = false
-				fill.Size = UDim2.new(0, 0, 1, 0)
-			end
-		end
-	end
-end
-
-local function buildSnapshotForCharacter(character, currentTime)
-	local moveset = character:FindFirstChild("Moveset")
-	local moves = {}
-
-	if not MoveStates[character] then
-		MoveStates[character] = {}
-	end
-
-	if moveset then
-		for idx, moveInstance in ipairs(moveset:GetChildren()) do
-			local key = getAttribute(moveInstance, "Key", idx)
-			local cooldownDuration = tonumber(moveInstance.Value) or 0
-			local lastUseId = getAttribute(moveInstance, "LastUse", 0)
-
-			local charMoveStates = MoveStates[character]
-			local moveState = charMoveStates[moveInstance.Name] or {
-				LastUse = 0,
-				TimeStarted = 0,
-			}
-
-			if lastUseId ~= moveState.LastUse then
-				moveState.LastUse = lastUseId
-				moveState.TimeStarted = currentTime
-			end
-
-			charMoveStates[moveInstance.Name] = moveState
-
-			local timePassed = currentTime - moveState.TimeStarted
-			local remainingTime = 0
-
-			if moveState.TimeStarted > 0 and cooldownDuration > 0 and timePassed < cooldownDuration then
-				remainingTime = cooldownDuration - timePassed
-			end
-
-			table.insert(moves, {
-				Name = moveInstance.Name,
-				Key = key,
-				Cooldown = cooldownDuration,
-				RemainingTime = remainingTime,
-			})
-		end
-
-		table.sort(moves, function(a, b)
-			return a.Key < b.Key
-		end)
-	end
-
-	return {
-		Character = character,
-		Label = getCharacterLabel(character),
-		Moves = moves,
-	}
-end
-
-local function getMostRecentMoveElapsed(character, currentTime)
-	local charMoveStates = MoveStates[character]
-	if not charMoveStates then
-		return nil
-	end
-
-	local latestTimeStarted = nil
-
-	for _, moveState in pairs(charMoveStates) do
-		if moveState.TimeStarted and moveState.TimeStarted > 0 then
-			if latestTimeStarted == nil or moveState.TimeStarted > latestTimeStarted then
-				latestTimeStarted = moveState.TimeStarted
-			end
-		end
-	end
-
-	if not latestTimeStarted then
-		return nil
-	end
-
-	return currentTime - latestTimeStarted
-end
-
-local function findLikelyAttacker(victim, currentTime)
-	local victimRoot = victim and victim:FindFirstChild("HumanoidRootPart")
-	if not victimRoot then
-		return nil
-	end
-
-	local bestCharacter = nil
-	local bestElapsed = math.huge
-	local bestDistance = math.huge
-
-	for character in pairs(CharacterSnapshots) do
-		if character ~= victim then
-			local candidateRoot = character:FindFirstChild("HumanoidRootPart")
-			local elapsed = getMostRecentMoveElapsed(character, currentTime)
-
-			if candidateRoot and elapsed and elapsed <= Settings.RecentAttackWindow then
-				local distance = (victimRoot.Position - candidateRoot.Position).Magnitude
-
-				if distance <= Settings.MaxAttackDistance then
-					if elapsed < bestElapsed or (math.abs(elapsed - bestElapsed) < 0.05 and distance < bestDistance) then
-						bestElapsed = elapsed
-						bestDistance = distance
-						bestCharacter = character
-					end
-				end
-			end
-		end
-	end
-
-	return bestCharacter
-end
-
-local function setCombatTarget(attacker, victim)
-	ActiveTarget = attacker
-	ActiveVictim = victim
-	ActiveUntil = tick() + Settings.ActiveDisplaySeconds
-	LastCombatReason = "Combat active"
-end
-
-local function bindHumanoid(character)
-	local humanoid = character:FindFirstChildOfClass("Humanoid")
-	if not humanoid or HumanoidConnections[humanoid] then
-		return
-	end
-
-	LastHealthByHumanoid[humanoid] = humanoid.Health
-
-	HumanoidConnections[humanoid] = humanoid.HealthChanged:Connect(function(newHealth)
-		local oldHealth = LastHealthByHumanoid[humanoid]
-		local now = tick()
-
-		if oldHealth ~= nil and newHealth < oldHealth then
-			if isValidVictim(character) then
-				local attacker = findLikelyAttacker(character, now)
-
-				if attacker then
-					setCombatTarget(attacker, character)
-				end
-			end
-		end
-
-		LastHealthByHumanoid[humanoid] = newHealth
-	end)
-end
-
-local function cleanupHumanoidConnections(validCharacters)
-	for humanoid, connection in pairs(HumanoidConnections) do
-		local character = humanoid.Parent
-
-		if not humanoid.Parent or not character or not validCharacters[character] then
-			if connection then
-				connection:Disconnect()
-			end
-
-			HumanoidConnections[humanoid] = nil
-			LastHealthByHumanoid[humanoid] = nil
-		end
-	end
-end
-
-clearPanel()
-
---// =========================
---// MAIN LOOP
---// =========================
-RunService.RenderStepped:Connect(function()
-	local currentTime = tick()
-	local targets = getTargets()
-	local validCharacters = {}
-
-	for _, character in ipairs(targets) do
-		if not character:IsA("Model") then
-			continue
-		end
-
-		local humanoid = character:FindFirstChildOfClass("Humanoid")
-		if not humanoid or humanoid.Health <= 0 then
-			continue
-		end
-
-		validCharacters[character] = true
-		bindHumanoid(character)
-		CharacterSnapshots[character] = buildSnapshotForCharacter(character, currentTime)
-	end
-
-	cleanupHumanoidConnections(validCharacters)
-
-	for character in pairs(CharacterSnapshots) do
-		if not validCharacters[character] then
-			CharacterSnapshots[character] = nil
-			MoveStates[character] = nil
-
-			if ActiveTarget == character or ActiveVictim == character then
-				ActiveTarget = nil
-				ActiveVictim = nil
-				ActiveUntil = 0
-				LastCombatReason = "Waiting for a valid user to be attacked..."
-			end
-		end
-	end
-
-	local isActive = ActiveTarget ~= nil and currentTime <= ActiveUntil
-	local snapshot = isActive and CharacterSnapshots[ActiveTarget] or nil
-
-	if isActive and snapshot then
-		showMovesForSnapshot(snapshot, ActiveUntil - currentTime)
-	else
-		clearPanel()
-	end
+-- Render loop
+renderConnection = RunService.RenderStepped:Connect(function()
+    local currentTime = tick()
+    
+    -- Target the specific Characters folder natively
+    local charactersFolder = workspace:FindFirstChild("Characters")
+    local targets = {}
+    
+    if charactersFolder then
+        targets = charactersFolder:GetChildren()
+    else
+        -- Fallback to all workspace children with humanoids if no Characters folder
+        for _, obj in ipairs(workspace:GetChildren()) do
+            if obj:FindFirstChild("Humanoid") then
+                table.insert(targets, obj)
+            end
+        end
+    end
+    
+    local activeCharacterNames = {}
+    
+    for _, character in ipairs(targets) do
+        -- Skip invalid models (this captures both Players and Dummys)
+        if not character:IsA("Model") or not character:FindFirstChild("HumanoidRootPart") or not character:FindFirstChild("Humanoid") then
+            continue
+        end
+        
+        local humanoid = character.Humanoid
+        local rootPart = character.HumanoidRootPart
+        local charName = character.Name
+        
+        -- Range Check
+        if (Camera.CFrame.Position - rootPart.Position).Magnitude > Settings.MaxRenderDistance then
+            continue
+        end
+        
+        -- Disable LocalPlayer tracking
+        if localPlayer and character == localPlayer.Character then
+            continue
+        end
+        
+        if humanoid.Health <= 0 then
+            continue
+        end
+
+        local moveset = character:FindFirstChild("Moveset")
+        if not moveset or not Settings.DrawCooldowns then
+            continue
+        end
+        
+        -- Calculate screen position for the base bounding box
+        local rootPos, rootOnScreen = Camera:WorldToViewportPoint(rootPart.Position)
+        if not rootOnScreen then
+            continue
+        end
+        
+        -- Get character size to estimate ESP dimensions
+        -- Use ExtentsSize to properly factor in custom Dummy sizes
+        local charSize = character:GetExtentsSize()
+        local topPos = Camera:WorldToViewportPoint(rootPart.Position + Vector3.new(0, charSize.Y / 2, 0))
+        local bottomPos = Camera:WorldToViewportPoint(rootPart.Position - Vector3.new(0, charSize.Y / 2, 0))
+        
+        local boxHeight = math.abs(topPos.Y - bottomPos.Y)
+        local boxWidth = boxHeight * 0.5
+        
+        -- Base position for Cooldown UI (drawn slightly to the right of Character)
+        local startX = rootPos.X + (boxWidth / 2) + 5
+        local startY = topPos.Y
+
+        -- Gather player moves
+        local moves = {}
+        for idx, moveInstance in ipairs(moveset:GetChildren()) do
+            local key = GetAttribute(moveInstance, "Key", idx)
+            local cooldownDuration = moveInstance.Value or 0
+            local lastUseId = GetAttribute(moveInstance, "LastUse", 0)
+            
+            table.insert(moves, {
+                Name = moveInstance.Name,
+                Instance = moveInstance,
+                Key = key,
+                Cooldown = cooldownDuration,
+                LastUseRecord = lastUseId
+            })
+        end
+        
+        -- Sort moves by Key (matches ordered display in ware.lua)
+        table.sort(moves, function(a, b) return a.Key < b.Key end)
+        
+        local numMoves = #moves
+        if numMoves == 0 then continue end
+        
+        -- Dynamic sizing based on bounding box height
+        local moveBoxSize = boxHeight / math.max(numMoves, 1)
+        moveBoxSize = math.clamp(moveBoxSize, 12, 35) -- Keep text easily readable
+
+        activeCharacterNames[charName] = true
+        
+        if not CharacterGuis[charName] then CharacterGuis[charName] = {} end
+        local activeMoveIds = {}
+        
+        for i, move in ipairs(moves) do
+            local moveId = charName .. "_Move_" .. i
+            activeMoveIds[moveId] = true
+            
+            local yPos = startY + (i - 1) * (moveBoxSize + Settings.BarSpacing)
+            
+            -- Cooldown Logic Translation
+            local stateKey = charName .. "_" .. move.Name
+            local moveState = MoveStates[stateKey] or { LastUse = 0, TimeStarted = 0 }
+            
+            -- Detect when move is used based on LastUse attribute changing
+            if move.LastUseRecord ~= moveState.LastUse then
+                moveState.LastUse = move.LastUseRecord
+                moveState.TimeStarted = currentTime
+            end
+            MoveStates[stateKey] = moveState
+            
+            local timePassed = currentTime - moveState.TimeStarted
+            local remainingTime = 0
+            
+            if moveState.TimeStarted > 0 and timePassed < move.Cooldown then
+                remainingTime = move.Cooldown - timePassed
+            end
+
+            -- Update or Create GUI
+            local ui = CharacterGuis[charName][moveId]
+            if not ui then
+                ui = CreateMoveUI(charName, i)
+                CharacterGuis[charName][moveId] = ui
+            end
+            
+            ui.Visible = true
+            ui.Position = UDim2.new(0, startX, 0, yPos)
+            ui.Size = UDim2.new(0, moveBoxSize, 0, moveBoxSize)
+            
+            -- Update UI Cooldown Fill Rectangle
+            local fill = ui:FindFirstChild("Fill")
+            if fill then
+                if remainingTime > 0 then
+                    local ratio = math.clamp(remainingTime / move.Cooldown, 0, 1)
+                    fill.Visible = true
+                    fill.Size = UDim2.new(ratio, 0, 1, 0)
+                else
+                    fill.Visible = false
+                end
+            end
+            
+            -- Set Text and maintain padding for crisp rendering
+            local textLabel = ui:FindFirstChild("Label")
+            if textLabel then
+                textLabel.Text = move.Name
+                local padding = math.floor(moveBoxSize * 0.15)
+                local uiPadding = textLabel:FindFirstChild("UIPadding") or Instance.new("UIPadding", textLabel)
+                uiPadding.PaddingTop = UDim.new(0, padding)
+                uiPadding.PaddingBottom = UDim.new(0, padding)
+            end
+        end
+        
+        -- Ultimate Bar Logic
+        local ultId = charName .. "_Ult"
+        activeMoveIds[ultId] = true
+        
+        local totalHeight = (numMoves * moveBoxSize) + ((numMoves - 1) * Settings.BarSpacing)
+        local ultWidth = math.max(moveBoxSize * 0.25, 4)
+        local ultX = startX + moveBoxSize + Settings.BarSpacing
+        
+        local targetPlayer = Players:GetPlayerFromCharacter(character)
+        local ultValue = 0
+        if targetPlayer then
+            ultValue = GetAttribute(targetPlayer, "Ultimate", 0)
+        else
+            ultValue = GetAttribute(character, "Ultimate", 0)
+        end
+        local ultRatio = math.clamp(ultValue / 100, 0, 1) -- Assuming 0 to 100
+        
+        local ultUi = CharacterGuis[charName][ultId]
+        if not ultUi then
+            ultUi = CreateUltUI(charName)
+            CharacterGuis[charName][ultId] = ultUi
+        end
+        
+        ultUi.Visible = true
+        ultUi.Position = UDim2.new(0, ultX, 0, startY)
+        ultUi.Size = UDim2.new(0, ultWidth, 0, totalHeight)
+        
+        local ultFill = ultUi:FindFirstChild("Fill")
+        if ultFill then
+            if ultRatio > 0 then
+                ultFill.Visible = true
+                -- Lerp for smooth visually appealing UI or direct set
+                ultFill.Size = UDim2.new(1, 0, ultRatio, 0)
+            else
+                ultFill.Visible = false
+            end
+        end
+        
+        -- Clean up extra move GUIs for this specific character if moves are removed
+        for moveId, ui in pairs(CharacterGuis[charName]) do
+            if not activeMoveIds[moveId] then
+                ui.Visible = false
+                ui:Destroy()
+                CharacterGuis[charName][moveId] = nil
+            end
+        end
+    end
+    
+    -- Clean up character GUIs for characters that are no longer actively drawn
+    for charName, charUis in pairs(CharacterGuis) do
+        if not activeCharacterNames[charName] then
+            for moveId, ui in pairs(charUis) do
+                ui:Destroy()
+            end
+            CharacterGuis[charName] = nil
+        end
+    end
 end)
