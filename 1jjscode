@@ -25,8 +25,14 @@ local Settings = {
     PanelSize = UDim2.new(0, 240, 0, 190),
     MaxRows = 7,
     ActiveSeconds = 8,
-    RecentAttackWindow = 1.2,
-    MaxAttackDistance = 16,
+    RecentAttackWindow = 2.4,
+    MaxAttackDistance = 24,
+    HitResolveWindow = 0.45,
+
+    local PendingHit = false
+    local PendingHitUntil = 0
+    local PendingBestAttacker = nil
+    local PendingBestScore = -math.huge
 
     Bg = Color3.fromRGB(20, 24, 31),
     Top = Color3.fromRGB(28, 34, 44),
@@ -345,6 +351,7 @@ local function BuildSnapshot(character, now)
     local charState = MoveStates[character] or {}
     local moves = {}
     local lastRecentUse = 0
+    local recentUseCount = 0
 
     if moveset then
         for idx, moveInstance in ipairs(moveset:GetChildren()) do
@@ -377,6 +384,7 @@ local function BuildSnapshot(character, now)
             end
 
             if state.TimeStarted > 0 and (now - state.TimeStarted) <= Settings.RecentAttackWindow then
+                recentUseCount += 1
                 if state.TimeStarted > lastRecentUse then
                     lastRecentUse = state.TimeStarted
                 end
@@ -403,6 +411,7 @@ local function BuildSnapshot(character, now)
         RootPosition = root.Position,
         Moves = moves,
         LastRecentUse = lastRecentUse,
+        RecentUseCount = recentUseCount,
     }
 end
 
@@ -433,7 +442,7 @@ local function FindLikelyAttacker(now)
     local myCharacter = LocalPlayer.Character
     local myRoot = GetRoot(myCharacter)
     if not myCharacter or not myRoot then
-        return nil
+        return nil, -math.huge
     end
 
     local bestCharacter = nil
@@ -443,7 +452,13 @@ local function FindLikelyAttacker(now)
         if character ~= myCharacter and snap.LastRecentUse > 0 then
             local dist = (snap.RootPosition - myRoot.Position).Magnitude
             if dist <= Settings.MaxAttackDistance then
-                local score = snap.LastRecentUse - (dist * 0.02)
+                local age = now - snap.LastRecentUse
+                local recencyScore = math.max(0, Settings.RecentAttackWindow - age) * 8
+                local distancePenalty = dist * 0.18
+                local moveCountBonus = (snap.RecentUseCount or 0) * 1.25
+
+                local score = recencyScore + moveCountBonus - distancePenalty
+
                 if score > bestScore then
                     bestScore = score
                     bestCharacter = character
@@ -452,7 +467,7 @@ local function FindLikelyAttacker(now)
         end
     end
 
-    return bestCharacter
+    return bestCharacter, bestScore
 end
 
 local function RenderSnapshot(snapshot, secondsLeft)
@@ -505,29 +520,20 @@ local function BindCharacter(character)
     Status.Text = "Loaded. Waiting for you to be hit..."
 
     HealthConnection = humanoid.HealthChanged:Connect(function(newHealth)
-        local oldHealth = LastHealth
-        LastHealth = newHealth
+    local oldHealth = LastHealth
+    LastHealth = newHealth
 
-        if oldHealth and newHealth < oldHealth then
-            local now = tick()
-            RefreshSnapshots(now)
+    if oldHealth and newHealth < oldHealth then
+        local now = tick()
 
-            local attacker = FindLikelyAttacker(now)
-            if attacker then
-                ActiveAttacker = attacker
-                ActiveUntil = now + Settings.ActiveSeconds
-                Attacker.Text = "Attacker: " .. CharacterLabel(attacker)
-                Status.Text = "You were hit. Tracking attacker cooldowns..."
-            else
-                ActiveAttacker = nil
-                ActiveUntil = 0
-                Attacker.Text = "Attacker: ?"
-                Status.Text = "You were hit, but attacker was not found"
-                HideRows()
-            end
-        end
-    end)
-end
+        PendingHit = true
+        PendingHitUntil = now + Settings.HitResolveWindow
+        PendingBestAttacker = nil
+        PendingBestScore = -math.huge
+
+        Status.Text = "You were hit. Resolving attacker..."
+    end
+end)
 
 if LocalPlayer.Character then
     BindCharacter(LocalPlayer.Character)
@@ -545,6 +551,31 @@ RunService.RenderStepped:Connect(function()
     local now = tick()
     RefreshSnapshots(now)
 
+    if PendingHit then
+        if now <= PendingHitUntil then
+            local attacker, score = FindLikelyAttacker(now)
+            if attacker and score > PendingBestScore then
+                PendingBestAttacker = attacker
+                PendingBestScore = score
+            end
+        else
+            PendingHit = false
+
+            if PendingBestAttacker then
+                ActiveAttacker = PendingBestAttacker
+                ActiveUntil = now + Settings.ActiveSeconds
+                Attacker.Text = "Attacker: " .. CharacterLabel(PendingBestAttacker)
+                Status.Text = "You were hit. Tracking attacker cooldowns..."
+            else
+                ActiveAttacker = nil
+                ActiveUntil = 0
+                Attacker.Text = "Attacker: ?"
+                Status.Text = "You were hit, but attacker was not found"
+                HideRows()
+            end
+        end
+    end
+
     if ActiveAttacker and now <= ActiveUntil then
         local snapshot = Snapshots[ActiveAttacker]
         if snapshot then
@@ -554,7 +585,7 @@ RunService.RenderStepped:Connect(function()
             ActiveUntil = 0
             RenderSnapshot(nil, 0)
         end
-    else
+    elseif not PendingHit then
         if ActiveAttacker then
             ActiveAttacker = nil
             ActiveUntil = 0
