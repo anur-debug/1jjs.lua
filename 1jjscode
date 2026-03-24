@@ -40,11 +40,6 @@ local Settings = {
     BarFill = Color3.fromRGB(86, 145, 255),
 }
 
-local PendingHit = false
-local PendingHitUntil = 0
-local PendingBestAttacker = nil
-local PendingBestScore = -math.huge
-
     Bg = Color3.fromRGB(20, 24, 31),
     Top = Color3.fromRGB(28, 34, 44),
     Card = Color3.fromRGB(34, 41, 53),
