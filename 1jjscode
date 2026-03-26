@@ -347,8 +347,8 @@ local function BuildSnapshot(character, now)
             local val = tonumber(moveInstance.Value) or 0
             
             local state = charState[moveInstance.Name] or {
-    MaxCooldown = val,
-    LastVal = val,
+    MaxCooldown = math.max(val, 0),
+    LastVal = nil,
     TimeStarted = 0,
     Key = key,
     AttrCache = {}
@@ -383,37 +383,43 @@ for attrName, attrVal in pairs(attrs) do
     local lastAttr = state.AttrCache[attrName]
 
     if type(attrVal) == "number" then
-        -- Base/max cooldown config
-        if lowerName:match("cooldown") and not (
-            lowerName:match("remain") or
-            lowerName:match("left") or
-            lowerName:match("timeleft")
-        ) then
+        -- Treat plain "cooldown" as base/max cooldown, not live remaining
+        if lowerName:match("cooldown")
+            and not lowerName:match("remain")
+            and not lowerName:match("left")
+            and not lowerName:match("time")
+            and not lowerName:match("tick") then
+
             if attrVal > state.MaxCooldown then
                 state.MaxCooldown = attrVal
             end
             cooldown = math.max(cooldown, state.MaxCooldown)
         end
 
-        -- Explicit live remaining time
-        if lowerName:match("remain") or lowerName:match("left") or lowerName:match("timeleft") then
+        -- Treat remain/left/time/tick as live remaining cooldown
+        if lowerName:match("remain") or lowerName:match("left") or lowerName:match("time") or lowerName:match("tick") then
             if attrVal > 0 then
                 remaining = attrVal
+
                 if attrVal > state.MaxCooldown then
                     state.MaxCooldown = attrVal
                 end
                 cooldown = math.max(cooldown, state.MaxCooldown)
+
+                if lastAttr ~= attrVal then
+                    if lastAttr and attrVal < lastAttr then
+                        state.TimeStarted = now - math.max(0, state.MaxCooldown - attrVal)
+                    else
+                        state.TimeStarted = now
+                    end
+                end
+            end
+        elseif lastAttr ~= attrVal then
+            if lowerName:match("last") or lowerName:match("start") or lowerName:match("use") then
+                state.TimeStarted = now
             end
         end
 
-        -- Trigger inferred countdown when timing attrs change
-        if lastAttr ~= attrVal then
-            if lowerName:match("last") or lowerName:match("start") or lowerName:match("tick") or lowerName:match("use") then
-                state.TimeStarted = now
-            elseif (lowerName:match("remain") or lowerName:match("left") or lowerName:match("timeleft")) and attrVal > 0 then
-                state.TimeStarted = now - math.max(0, state.MaxCooldown - attrVal)
-            end
-        end
     elseif type(attrVal) == "boolean" then
         if lastAttr ~= attrVal then
             if attrVal == true and (lowerName:match("cooldown") or lowerName:match("cd") or lowerName:match("active") or lowerName:match("used")) then
@@ -431,17 +437,18 @@ for _, child in ipairs(moveInstance:GetChildren()) do
         local childName = child.Name:lower()
         local cVal = tonumber(child.Value) or 0
 
-        -- Explicit live remaining time
-        if childName:match("remain") or childName:match("left") or childName:match("timeleft") then
+        -- remain/left/time/tick = live remaining cooldown
+        if childName:match("remain") or childName:match("left") or childName:match("time") or childName:match("tick") then
             if cVal > 0 then
                 remaining = cVal
+
                 if cVal > state.MaxCooldown then
                     state.MaxCooldown = cVal
                 end
                 cooldown = math.max(cooldown, state.MaxCooldown)
             end
 
-        -- Base/max cooldown config
+        -- cooldown = base/max cooldown
         elseif childName:match("cooldown") then
             if cVal > state.MaxCooldown then
                 state.MaxCooldown = cVal
@@ -451,15 +458,12 @@ for _, child in ipairs(moveInstance:GetChildren()) do
     end
 end
 
-            -- Calculate local remaining time if a trigger was hit but no explicit remaining variable exists
-            if remaining == 0 and state.TimeStarted > 0 and cooldown > 0 then
-                local elapsed = now - state.TimeStarted
-                if elapsed < cooldown then
-                    remaining = cooldown - elapsed
-                else
-                    state.TimeStarted = 0
-                end
-            end
+-- If Value itself looks like the live remaining timer, use it only when we already
+-- know the max cooldown is larger than the current value.
+if remaining == 0 and val > 0 and state.MaxCooldown > val then
+    remaining = val
+    state.TimeStarted = now - math.max(0, state.MaxCooldown - val)
+end
 
             -- Prevent UI errors if a move has no inherent cooldown configuration
             if cooldown <= 0 then cooldown = 1 end
