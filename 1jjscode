@@ -1,6 +1,7 @@
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
 local CoreGui = game:GetService("CoreGui")
 
 repeat task.wait() until Players.LocalPlayer
@@ -11,202 +12,117 @@ local PlayerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui") or LocalPlayer:
 local GuiParent = PlayerGui or CoreGui
 
 if not GuiParent then
-    warn("[CooldownTracker] No GUI parent found.")
-    return
+	warn("[CooldownTracker] No GUI parent found")
+	return
 end
 
-local OldGui = GuiParent:FindFirstChild("CooldownTracker_Rewrite")
-if OldGui then
-    OldGui:Destroy()
+local OLD = GuiParent:FindFirstChild("CooldownTracker_Marathon")
+if OLD then
+	OLD:Destroy()
 end
 
-local Settings = {
-    PanelPosition = UDim2.new(0, 20, 0.6, 0),
-    PanelSize = UDim2.new(0, 250, 0, 205),
-    MaxRows = 7,
+local SETTINGS = {
+	PanelPosition = UDim2.new(0, 20, 0.6, 0),
+	PanelSize = UDim2.new(0, 252, 0, 198),
+	RowCount = 4,
+	TargetMaxDistance = 200,
+	TargetMinDot = 0.84,
 
-    TargetMaxDistance = 200,
-    TargetFovDot = 0.85,
+	Background = Color3.fromRGB(244, 244, 238),
+	BackgroundAlt = Color3.fromRGB(234, 235, 227),
+	Header = Color3.fromRGB(214, 255, 34),
+	HeaderSoft = Color3.fromRGB(231, 255, 130),
+	Stroke = Color3.fromRGB(202, 209, 189),
+	Text = Color3.fromRGB(21, 24, 22),
+	SubText = Color3.fromRGB(90, 96, 87),
+	Accent = Color3.fromRGB(214, 255, 34),
+	AccentSoft = Color3.fromRGB(191, 228, 65),
+	Hot = Color3.fromRGB(255, 92, 43),
+	HotSoft = Color3.fromRGB(255, 148, 103),
+	Line = Color3.fromRGB(18, 18, 18),
+	BarBack = Color3.fromRGB(220, 223, 212),
+	Ready = Color3.fromRGB(214, 255, 34),
+	Cooldown = Color3.fromRGB(255, 92, 43),
 
-    Background = Color3.fromRGB(20, 24, 31),
-    Topbar = Color3.fromRGB(28, 34, 44),
-    Card = Color3.fromRGB(34, 41, 53),
-    Stroke = Color3.fromRGB(78, 92, 114),
-    Text = Color3.fromRGB(235, 240, 248),
-    SubText = Color3.fromRGB(155, 170, 190),
-    Accent = Color3.fromRGB(110, 170, 255),
-    BarBack = Color3.fromRGB(15, 19, 27),
-    BarFill = Color3.fromRGB(86, 145, 255),
+	TitleFont = Enum.Font.Bodoni,
+	LabelFont = Enum.Font.GothamMedium,
+	MonoFont = Enum.Font.Code,
+	NumberFont = Enum.Font.GothamBlack,
 }
 
-local function getAttribute(inst, attrName, default)
-    if not inst then
-        return default
-    end
+local RNG = Random.new()
+local MoveStates = {}
+local Snapshots = {}
+local ActiveTarget = nil
+local LastAnimatedTarget = nil
+local AnimationToken = 0
 
-    local ok, value = pcall(function()
-        return inst:GetAttribute(attrName)
-    end)
+local function getAttribute(inst, attr, default)
+	if not inst then
+		return default
+	end
 
-    if ok and value ~= nil then
-        return value
-    end
+	local ok, value = pcall(function()
+		return inst:GetAttribute(attr)
+	end)
 
-    return default
-end
+	if ok and value ~= nil then
+		return value
+	end
 
-local function getHumanoid(character)
-    return character and character:FindFirstChildOfClass("Humanoid")
+	return default
 end
 
 local function getRoot(character)
-    return character and character:FindFirstChild("HumanoidRootPart")
+	return character and character:FindFirstChild("HumanoidRootPart")
+end
+
+local function getHumanoid(character)
+	return character and character:FindFirstChildOfClass("Humanoid")
 end
 
 local function getCharacters()
-    local list = {}
-    local seen = {}
+	local list = {}
+	local seen = {}
 
-    local characterFolder = workspace:FindFirstChild("Characters")
-    if characterFolder then
-        for _, obj in ipairs(characterFolder:GetChildren()) do
-            if obj:IsA("Model") then
-                seen[obj] = true
-                table.insert(list, obj)
-            end
-        end
-    end
+	local folder = workspace:FindFirstChild("Characters")
+	if folder then
+		for _, obj in ipairs(folder:GetChildren()) do
+			if obj:IsA("Model") then
+				seen[obj] = true
+				table.insert(list, obj)
+			end
+		end
+	end
 
-    for _, player in ipairs(Players:GetPlayers()) do
-        local character = player.Character
-        if character and character:IsA("Model") and not seen[character] then
-            seen[character] = true
-            table.insert(list, character)
-        end
-    end
+	for _, plr in ipairs(Players:GetPlayers()) do
+		local char = plr.Character
+		if char and char:IsA("Model") and not seen[char] then
+			seen[char] = true
+			table.insert(list, char)
+		end
+	end
 
-    return list
+	return list
 end
 
 local function characterLabel(character)
-    local player = Players:GetPlayerFromCharacter(character)
-    return player and player.Name or character.Name
+	local plr = Players:GetPlayerFromCharacter(character)
+	return (plr and plr.Name or character.Name)
 end
 
-local function lower(str)
-    return string.lower(tostring(str or ""))
+local function upper(text)
+	return string.upper(tostring(text or ""))
 end
 
-local function nameHasAny(name, tokens)
-    local n = lower(name)
-    for _, token in ipairs(tokens) do
-        if string.find(n, token, 1, true) then
-            return true
-        end
-    end
-    return false
-end
-
-local function clampNumber(value, fallback)
-    value = tonumber(value)
-    if value == nil then
-        return fallback
-    end
-    return value
-end
-
-local STRONG_REMAINING_TOKENS = {
-    "remain",
-    "remaining",
-    "timeleft",
-    "left",
-    "lefttime",
-    "cooldownleft",
-    "currentcooldown",
-    "currentcd",
-}
-
-local BASE_COOLDOWN_TOKENS = {
-    "cooldown",
-    "maxcooldown",
-    "basecooldown",
-    "basedelay",
-    "maxcd",
-}
-
-local TRIGGER_TOKENS = {
-    "last",
-    "lastuse",
-    "lastused",
-    "start",
-    "started",
-    "use",
-    "used",
-    "activated",
-    "cast",
-    "fired",
-}
-
-local BOOLEAN_TRIGGER_TOKENS = {
-    "cooldown",
-    "cd",
-    "active",
-    "used",
-    "firing",
-}
-
-local function isStrongRemainingName(name)
-    return nameHasAny(name, STRONG_REMAINING_TOKENS)
-end
-
-local function isBaseCooldownName(name)
-    local n = lower(name)
-    if isStrongRemainingName(n) then
-        return false
-    end
-    return nameHasAny(n, BASE_COOLDOWN_TOKENS)
-end
-
-local function isWeakTimerName(name)
-    local n = lower(name)
-    return n == "time" or n == "tick" or n == "timer"
-end
-
-local function isTriggerName(name)
-    return nameHasAny(name, TRIGGER_TOKENS)
-end
-
-local function isBooleanTriggerName(name)
-    return nameHasAny(name, BOOLEAN_TRIGGER_TOKENS)
-end
-
-local function acquireBestTarget(snapshotMap)
-    local cameraCFrame = Camera.CFrame
-    local bestTarget = nil
-    local bestDot = Settings.TargetFovDot
-
-    for character in pairs(snapshotMap) do
-        if character ~= LocalPlayer.Character then
-            local root = getRoot(character)
-            if root then
-                local offset = root.Position - cameraCFrame.Position
-                local distance = offset.Magnitude
-                if distance <= Settings.TargetMaxDistance and distance > 0 then
-                    local dot = cameraCFrame.LookVector:Dot(offset.Unit)
-                    if dot > bestDot then
-                        bestDot = dot
-                        bestTarget = character
-                    end
-                end
-            end
-        end
-    end
-
-    return bestTarget
+local function tween(object, info, props)
+	local t = TweenService:Create(object, info, props)
+	t:Play()
+	return t
 end
 
 local Gui = Instance.new("ScreenGui")
-Gui.Name = "CooldownTracker_Rewrite"
+Gui.Name = "CooldownTracker_Marathon"
 Gui.ResetOnSpawn = false
 Gui.IgnoreGuiInset = true
 Gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
@@ -214,186 +130,325 @@ Gui.Parent = GuiParent
 
 local Panel = Instance.new("Frame")
 Panel.Name = "Panel"
-Panel.Size = Settings.PanelSize
-Panel.Position = Settings.PanelPosition
-Panel.BackgroundColor3 = Settings.Background
+Panel.Size = SETTINGS.PanelSize
+Panel.Position = SETTINGS.PanelPosition
+Panel.BackgroundColor3 = SETTINGS.Background
 Panel.BorderSizePixel = 0
 Panel.Active = true
 Panel.Parent = Gui
 
 local PanelCorner = Instance.new("UICorner")
-PanelCorner.CornerRadius = UDim.new(0, 10)
+PanelCorner.CornerRadius = UDim.new(0, 14)
 PanelCorner.Parent = Panel
 
 local PanelStroke = Instance.new("UIStroke")
-PanelStroke.Color = Settings.Stroke
+PanelStroke.Color = SETTINGS.Stroke
 PanelStroke.Thickness = 1
 PanelStroke.Parent = Panel
 
-local Topbar = Instance.new("Frame")
-Topbar.Name = "Topbar"
-Topbar.Size = UDim2.new(1, 0, 0, 28)
-Topbar.BackgroundColor3 = Settings.Topbar
-Topbar.BorderSizePixel = 0
-Topbar.Active = true
-Topbar.Parent = Panel
+local Header = Instance.new("Frame")
+Header.Name = "Header"
+Header.Size = UDim2.new(1, 0, 0, 56)
+Header.BackgroundColor3 = SETTINGS.Header
+Header.BorderSizePixel = 0
+Header.Parent = Panel
 
-local TopbarCorner = Instance.new("UICorner")
-TopbarCorner.CornerRadius = UDim.new(0, 10)
-TopbarCorner.Parent = Topbar
+local HeaderCorner = Instance.new("UICorner")
+HeaderCorner.CornerRadius = UDim.new(0, 14)
+HeaderCorner.Parent = Header
 
-local TopFix = Instance.new("Frame")
-TopFix.BackgroundColor3 = Settings.Topbar
-TopFix.BorderSizePixel = 0
-TopFix.Size = UDim2.new(1, 0, 0, 10)
-TopFix.Position = UDim2.new(0, 0, 1, -10)
-TopFix.Parent = Topbar
+local HeaderFix = Instance.new("Frame")
+HeaderFix.BackgroundColor3 = SETTINGS.Header
+HeaderFix.BorderSizePixel = 0
+HeaderFix.Size = UDim2.new(1, 0, 0, 16)
+HeaderFix.Position = UDim2.new(0, 0, 1, -16)
+HeaderFix.Parent = Header
+
+local HeaderLine = Instance.new("Frame")
+HeaderLine.BackgroundColor3 = SETTINGS.Line
+HeaderLine.BorderSizePixel = 0
+HeaderLine.Size = UDim2.new(1, 0, 0, 1)
+HeaderLine.Position = UDim2.new(0, 0, 1, -1)
+HeaderLine.Parent = Header
 
 local Title = Instance.new("TextLabel")
 Title.BackgroundTransparency = 1
-Title.Position = UDim2.new(0, 10, 0, 0)
-Title.Size = UDim2.new(1, -12, 1, 0)
-Title.Font = Enum.Font.GothamSemibold
-Title.TextSize = 13
+Title.Size = UDim2.new(1, -16, 0, 28)
+Title.Position = UDim2.new(0, 12, 0, 2)
+Title.Text = "EXFILTRATED"
+Title.TextColor3 = SETTINGS.Text
 Title.TextXAlignment = Enum.TextXAlignment.Left
-Title.TextColor3 = Settings.Text
-Title.Text = "Target Cooldowns"
-Title.Parent = Topbar
+Title.TextYAlignment = Enum.TextYAlignment.Center
+Title.Font = SETTINGS.TitleFont
+Title.TextSize = 24
+Title.Parent = Header
+
+local Subtitle = Instance.new("TextLabel")
+Subtitle.BackgroundTransparency = 1
+Subtitle.Size = UDim2.new(1, -16, 0, 16)
+Subtitle.Position = UDim2.new(0, 13, 0, 31)
+Subtitle.Text = "PERIMETER | RUN"
+Subtitle.TextColor3 = SETTINGS.Text
+Subtitle.TextXAlignment = Enum.TextXAlignment.Left
+Subtitle.Font = SETTINGS.MonoFont
+Subtitle.TextSize = 11
+Subtitle.Parent = Header
+
+local AccentTick = Instance.new("Frame")
+AccentTick.BackgroundColor3 = SETTINGS.Hot
+AccentTick.BorderSizePixel = 0
+AccentTick.Size = UDim2.new(0, 16, 0, 3)
+AccentTick.Position = UDim2.new(1, -24, 0, 8)
+AccentTick.Parent = Header
 
 local Info = Instance.new("Frame")
 Info.Name = "Info"
-Info.Size = UDim2.new(1, -12, 0, 58)
-Info.Position = UDim2.new(0, 6, 0, 34)
-Info.BackgroundColor3 = Settings.Card
+Info.BackgroundColor3 = SETTINGS.BackgroundAlt
 Info.BorderSizePixel = 0
+Info.Size = UDim2.new(1, -12, 0, 44)
+Info.Position = UDim2.new(0, 6, 0, 62)
 Info.Parent = Panel
 
 local InfoCorner = Instance.new("UICorner")
-InfoCorner.CornerRadius = UDim.new(0, 8)
+InfoCorner.CornerRadius = UDim.new(0, 10)
 InfoCorner.Parent = Info
 
 local InfoStroke = Instance.new("UIStroke")
-InfoStroke.Color = Settings.Stroke
+InfoStroke.Color = SETTINGS.Stroke
 InfoStroke.Thickness = 1
-InfoStroke.Transparency = 0.3
+InfoStroke.Transparency = 0.2
 InfoStroke.Parent = Info
+
+local InfoAccent = Instance.new("Frame")
+InfoAccent.BackgroundColor3 = SETTINGS.Accent
+InfoAccent.BorderSizePixel = 0
+InfoAccent.Size = UDim2.new(0, 4, 1, -10)
+InfoAccent.Position = UDim2.new(0, 6, 0, 5)
+InfoAccent.Parent = Info
+
+local InfoAccentCorner = Instance.new("UICorner")
+InfoAccentCorner.CornerRadius = UDim.new(1, 0)
+InfoAccentCorner.Parent = InfoAccent
 
 local Status = Instance.new("TextLabel")
 Status.BackgroundTransparency = 1
-Status.Position = UDim2.new(0, 8, 0, 5)
-Status.Size = UDim2.new(1, -16, 0, 14)
-Status.Font = Enum.Font.GothamMedium
-Status.TextSize = 11
+Status.Position = UDim2.new(0, 16, 0, 5)
+Status.Size = UDim2.new(1, -22, 0, 16)
+Status.Text = "LOOK AT A PLAYER AND PRESS Z"
+Status.TextColor3 = SETTINGS.SubText
 Status.TextXAlignment = Enum.TextXAlignment.Left
-Status.TextColor3 = Settings.SubText
-Status.Text = "Look at a player and press Z to target."
+Status.Font = SETTINGS.MonoFont
+Status.TextSize = 10
 Status.Parent = Info
-
-local Victim = Instance.new("TextLabel")
-Victim.BackgroundTransparency = 1
-Victim.Position = UDim2.new(0, 8, 0, 22)
-Victim.Size = UDim2.new(1, -16, 0, 14)
-Victim.Font = Enum.Font.Gotham
-Victim.TextSize = 11
-Victim.TextXAlignment = Enum.TextXAlignment.Left
-Victim.TextColor3 = Settings.Text
-Victim.Text = "Player: " .. LocalPlayer.Name
-Victim.Parent = Info
 
 local TargetLabel = Instance.new("TextLabel")
 TargetLabel.BackgroundTransparency = 1
-TargetLabel.Position = UDim2.new(0, 8, 0, 39)
-TargetLabel.Size = UDim2.new(1, -16, 0, 14)
-TargetLabel.Font = Enum.Font.GothamSemibold
-TargetLabel.TextSize = 11
+TargetLabel.Position = UDim2.new(0, 16, 0, 21)
+TargetLabel.Size = UDim2.new(1, -22, 0, 16)
+TargetLabel.Text = "TARGET: NONE"
+TargetLabel.TextColor3 = SETTINGS.Text
 TargetLabel.TextXAlignment = Enum.TextXAlignment.Left
-TargetLabel.TextColor3 = Settings.Accent
-TargetLabel.Text = "Target: -"
+TargetLabel.Font = SETTINGS.LabelFont
+TargetLabel.TextSize = 12
 TargetLabel.Parent = Info
 
-local Holder = Instance.new("Frame")
-Holder.BackgroundTransparency = 1
-Holder.Position = UDim2.new(0, 6, 0, 98)
-Holder.Size = UDim2.new(1, -12, 1, -104)
-Holder.Parent = Panel
+local RowsHolder = Instance.new("Frame")
+RowsHolder.Name = "RowsHolder"
+RowsHolder.BackgroundTransparency = 1
+RowsHolder.Position = UDim2.new(0, 6, 0, 112)
+RowsHolder.Size = UDim2.new(1, -12, 0, 78)
+RowsHolder.Parent = Panel
 
-local Layout = Instance.new("UIListLayout")
-Layout.Padding = UDim.new(0, 4)
-Layout.Parent = Holder
+local RowsLayout = Instance.new("UIListLayout")
+RowsLayout.FillDirection = Enum.FillDirection.Vertical
+RowsLayout.SortOrder = Enum.SortOrder.LayoutOrder
+RowsLayout.Padding = UDim.new(0, 4)
+RowsLayout.Parent = RowsHolder
+
+local SelectionOverlay = Instance.new("Frame")
+SelectionOverlay.Name = "SelectionOverlay"
+SelectionOverlay.BackgroundTransparency = 1
+SelectionOverlay.Size = UDim2.new(1, 0, 1, 0)
+SelectionOverlay.BorderSizePixel = 0
+SelectionOverlay.ClipsDescendants = true
+SelectionOverlay.Visible = false
+SelectionOverlay.ZIndex = 40
+SelectionOverlay.Parent = Panel
+
+local OverlayFlash = Instance.new("Frame")
+OverlayFlash.BackgroundColor3 = SETTINGS.Accent
+OverlayFlash.BackgroundTransparency = 1
+OverlayFlash.BorderSizePixel = 0
+OverlayFlash.Size = UDim2.new(1, 0, 1, 0)
+OverlayFlash.ZIndex = 41
+OverlayFlash.Parent = SelectionOverlay
+
+local OverlayBand = Instance.new("Frame")
+OverlayBand.BackgroundColor3 = SETTINGS.Accent
+OverlayBand.BackgroundTransparency = 0.05
+OverlayBand.BorderSizePixel = 0
+OverlayBand.Size = UDim2.new(1, 0, 0, 28)
+OverlayBand.Position = UDim2.new(0, 0, 0, -30)
+OverlayBand.ZIndex = 42
+OverlayBand.Parent = SelectionOverlay
+
+local OverlayBandGradient = Instance.new("UIGradient")
+OverlayBandGradient.Transparency = NumberSequence.new({
+	NumberSequenceKeypoint.new(0, 1),
+	NumberSequenceKeypoint.new(0.15, 0.2),
+	NumberSequenceKeypoint.new(0.5, 0.05),
+	NumberSequenceKeypoint.new(0.85, 0.2),
+	NumberSequenceKeypoint.new(1, 1),
+})
+OverlayBandGradient.Rotation = 90
+OverlayBandGradient.Parent = OverlayBand
+
+local OverlayOrangeBar = Instance.new("Frame")
+OverlayOrangeBar.BackgroundColor3 = SETTINGS.Hot
+OverlayOrangeBar.BackgroundTransparency = 0.05
+OverlayOrangeBar.BorderSizePixel = 0
+OverlayOrangeBar.AnchorPoint = Vector2.new(1, 0)
+OverlayOrangeBar.Size = UDim2.new(0, 0, 0, 16)
+OverlayOrangeBar.Position = UDim2.new(1, -8, 0, 126)
+OverlayOrangeBar.ZIndex = 43
+OverlayOrangeBar.Parent = SelectionOverlay
+
+local OverlayTag = Instance.new("TextLabel")
+OverlayTag.BackgroundTransparency = 1
+OverlayTag.Position = UDim2.new(0, 12, 1, -22)
+OverlayTag.Size = UDim2.new(1, -24, 0, 14)
+OverlayTag.Text = ""
+OverlayTag.TextColor3 = SETTINGS.Hot
+OverlayTag.TextXAlignment = Enum.TextXAlignment.Left
+OverlayTag.Font = SETTINGS.MonoFont
+OverlayTag.TextSize = 10
+OverlayTag.TextTransparency = 1
+OverlayTag.ZIndex = 44
+OverlayTag.Parent = SelectionOverlay
+
+local OverlayBlocks = {}
+for i = 1, 12 do
+	local block = Instance.new("Frame")
+	block.BackgroundColor3 = SETTINGS.Accent
+	block.BorderSizePixel = 0
+	block.BackgroundTransparency = 1
+	block.Visible = false
+	block.ZIndex = 42
+	block.Parent = SelectionOverlay
+	OverlayBlocks[i] = block
+end
 
 local Rows = {}
 
-local function newRow(i)
-    local row = Instance.new("Frame")
-    row.Name = "Row_" .. i
-    row.Size = UDim2.new(1, 0, 0, 18)
-    row.BackgroundColor3 = Settings.Card
-    row.BorderSizePixel = 0
-    row.Visible = false
-    row.Parent = Holder
+local function makeRow(slot)
+	local row = Instance.new("Frame")
+	row.Name = "Row_" .. slot
+	row.Size = UDim2.new(1, 0, 0, 18)
+	row.BackgroundColor3 = SETTINGS.BackgroundAlt
+	row.BorderSizePixel = 0
+	row.LayoutOrder = slot
+	row.Parent = RowsHolder
 
-    local rowCorner = Instance.new("UICorner")
-    rowCorner.CornerRadius = UDim.new(0, 7)
-    rowCorner.Parent = row
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 9)
+	corner.Parent = row
 
-    local rowStroke = Instance.new("UIStroke")
-    rowStroke.Color = Settings.Stroke
-    rowStroke.Thickness = 1
-    rowStroke.Transparency = 0.4
-    rowStroke.Parent = row
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = SETTINGS.Stroke
+	stroke.Thickness = 1
+	stroke.Transparency = 0.2
+	stroke.Parent = row
 
-    local label = Instance.new("TextLabel")
-    label.Name = "Label"
-    label.BackgroundTransparency = 1
-    label.Position = UDim2.new(0, 8, 0, 0)
-    label.Size = UDim2.new(1, -60, 1, 0)
-    label.Font = Enum.Font.GothamMedium
-    label.TextSize = 10
-    label.TextXAlignment = Enum.TextXAlignment.Left
-    label.TextColor3 = Settings.Text
-    label.Text = ""
-    label.Parent = row
+	local box = Instance.new("Frame")
+	box.Name = "Box"
+	box.Size = UDim2.new(0, 22, 0, 22)
+	box.AnchorPoint = Vector2.new(0, 0.5)
+	box.Position = UDim2.new(0, 6, 0.5, 0)
+	box.BackgroundColor3 = SETTINGS.Background
+	box.BorderSizePixel = 0
+	box.Parent = row
 
-    local time = Instance.new("TextLabel")
-    time.Name = "Time"
-    time.BackgroundTransparency = 1
-    time.Position = UDim2.new(1, -46, 0, 0)
-    time.Size = UDim2.new(0, 38, 1, 0)
-    time.Font = Enum.Font.Code
-    time.TextSize = 10
-    time.TextXAlignment = Enum.TextXAlignment.Right
-    time.TextColor3 = Settings.SubText
-    time.Text = ""
-    time.Parent = row
+	local boxCorner = Instance.new("UICorner")
+	boxCorner.CornerRadius = UDim.new(0, 7)
+	boxCorner.Parent = box
 
-    local barBack = Instance.new("Frame")
-    barBack.Name = "BarBack"
-    barBack.Position = UDim2.new(0, 0, 1, -3)
-    barBack.Size = UDim2.new(1, 0, 0, 3)
-    barBack.BorderSizePixel = 0
-    barBack.BackgroundColor3 = Settings.BarBack
-    barBack.Parent = row
+	local boxStroke = Instance.new("UIStroke")
+	boxStroke.Color = SETTINGS.Stroke
+	boxStroke.Thickness = 1
+	boxStroke.Parent = box
 
-    local backCorner = Instance.new("UICorner")
-    backCorner.CornerRadius = UDim.new(1, 0)
-    backCorner.Parent = barBack
+	local boxText = Instance.new("TextLabel")
+	boxText.Name = "BoxText"
+	boxText.BackgroundTransparency = 1
+	boxText.Size = UDim2.new(1, 0, 1, 0)
+	boxText.Text = "+"
+	boxText.TextColor3 = SETTINGS.SubText
+	boxText.Font = SETTINGS.NumberFont
+	boxText.TextSize = 12
+	boxText.Parent = box
 
-    local fill = Instance.new("Frame")
-    fill.Name = "Fill"
-    fill.Size = UDim2.new(0, 0, 1, 0)
-    fill.BorderSizePixel = 0
-    fill.BackgroundColor3 = Settings.BarFill
-    fill.Parent = barBack
+	local name = Instance.new("TextLabel")
+	name.Name = "Name"
+	name.BackgroundTransparency = 1
+	name.Position = UDim2.new(0, 36, 0, 0)
+	name.Size = UDim2.new(1, -92, 1, 0)
+	name.Text = "NO TARGET"
+	name.TextColor3 = SETTINGS.Text
+	name.TextXAlignment = Enum.TextXAlignment.Left
+	name.Font = SETTINGS.LabelFont
+	name.TextSize = 11
+	name.Parent = row
 
-    local fillCorner = Instance.new("UICorner")
-    fillCorner.CornerRadius = UDim.new(1, 0)
-    fillCorner.Parent = fill
+	local timer = Instance.new("TextLabel")
+	timer.Name = "Timer"
+	timer.BackgroundTransparency = 1
+	timer.AnchorPoint = Vector2.new(1, 0)
+	timer.Position = UDim2.new(1, -8, 0, 0)
+	timer.Size = UDim2.new(0, 48, 1, 0)
+	timer.Text = ""
+	timer.TextColor3 = SETTINGS.SubText
+	timer.TextXAlignment = Enum.TextXAlignment.Right
+	timer.Font = SETTINGS.MonoFont
+	timer.TextSize = 10
+	timer.Parent = row
 
-    return row
+	local barBack = Instance.new("Frame")
+	barBack.Name = "BarBack"
+	barBack.Size = UDim2.new(1, -12, 0, 2)
+	barBack.Position = UDim2.new(0, 6, 1, -4)
+	barBack.BackgroundColor3 = SETTINGS.BarBack
+	barBack.BorderSizePixel = 0
+	barBack.Parent = row
+
+	local barCorner = Instance.new("UICorner")
+	barCorner.CornerRadius = UDim.new(1, 0)
+	barCorner.Parent = barBack
+
+	local fill = Instance.new("Frame")
+	fill.Name = "Fill"
+	fill.Size = UDim2.new(0, 0, 1, 0)
+	fill.BackgroundColor3 = SETTINGS.Ready
+	fill.BorderSizePixel = 0
+	fill.Parent = barBack
+
+	local fillCorner = Instance.new("UICorner")
+	fillCorner.CornerRadius = UDim.new(1, 0)
+	fillCorner.Parent = fill
+
+	Rows[slot] = {
+		Frame = row,
+		Stroke = stroke,
+		Box = box,
+		BoxStroke = boxStroke,
+		BoxText = boxText,
+		Name = name,
+		Timer = timer,
+		Fill = fill,
+	}
 end
 
-for i = 1, Settings.MaxRows do
-    Rows[i] = newRow(i)
+for slot = 1, SETTINGS.RowCount do
+	makeRow(slot)
 end
 
 local dragging = false
@@ -402,424 +457,509 @@ local dragStart = nil
 local startPos = nil
 
 local function updateDrag(input)
-    if not dragStart or not startPos then
-        return
-    end
-
-    local delta = input.Position - dragStart
-    Panel.Position = UDim2.new(
-        startPos.X.Scale,
-        startPos.X.Offset + delta.X,
-        startPos.Y.Scale,
-        startPos.Y.Offset + delta.Y
-    )
+	local delta = input.Position - dragStart
+	Panel.Position = UDim2.new(
+		startPos.X.Scale,
+		startPos.X.Offset + delta.X,
+		startPos.Y.Scale,
+		startPos.Y.Offset + delta.Y
+	)
 end
 
-Topbar.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        dragging = true
-        dragStart = input.Position
-        startPos = Panel.Position
+Header.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		dragging = true
+		dragStart = input.Position
+		startPos = Panel.Position
 
-        input.Changed:Connect(function()
-            if input.UserInputState == Enum.UserInputState.End then
-                dragging = false
-            end
-        end)
-    end
+		input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then
+				dragging = false
+			end
+		end)
+	end
 end)
 
-Topbar.InputChanged:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-        dragInput = input
-    end
+Header.InputChanged:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+		dragInput = input
+	end
 end)
 
 UserInputService.InputChanged:Connect(function(input)
-    if dragging and input == dragInput then
-        updateDrag(input)
-    end
+	if dragging and input == dragInput then
+		updateDrag(input)
+	end
 end)
 
-local MoveStates = {}
-local Snapshots = {}
-local LockedTarget = nil
-
-local function hideRows()
-    for _, row in ipairs(Rows) do
-        row.Visible = false
-        row.Label.Text = ""
-        row.Time.Text = ""
-        row.BarBack.Fill.Size = UDim2.new(0, 0, 1, 0)
-    end
+local function resetOverlayBlocks()
+	for _, block in ipairs(OverlayBlocks) do
+		block.Visible = false
+		block.BackgroundTransparency = 1
+	end
 end
 
-local function resetMoveState(moveState, valueNow)
-    moveState.StartedAt = 0
-    moveState.LastValue = valueNow
-    moveState.LastObservedRemaining = nil
+local function playSelectionAnimation(targetName)
+	AnimationToken += 1
+	local token = AnimationToken
+
+	SelectionOverlay.Visible = true
+	OverlayFlash.BackgroundTransparency = 1
+	OverlayBand.Position = UDim2.new(0, 0, 0, -30)
+	OverlayBand.BackgroundTransparency = 0.05
+	OverlayOrangeBar.Size = UDim2.new(0, 0, 0, 16)
+	OverlayOrangeBar.Position = UDim2.new(1, -8, 0, 126)
+	OverlayOrangeBar.BackgroundTransparency = 0.05
+	OverlayTag.Text = "LINKED: " .. upper(targetName)
+	OverlayTag.TextTransparency = 1
+
+	resetOverlayBlocks()
+
+	tween(OverlayFlash, TweenInfo.new(0.06, Enum.EasingStyle.Linear), {BackgroundTransparency = 0.35})
+	task.delay(0.07, function()
+		if token ~= AnimationToken then
+			return
+		end
+		tween(OverlayFlash, TweenInfo.new(0.18, Enum.EasingStyle.Linear), {BackgroundTransparency = 1})
+	end)
+
+	tween(OverlayBand, TweenInfo.new(0.38, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+		Position = UDim2.new(0, 0, 1, -18),
+	})
+
+	task.delay(0.08, function()
+		if token ~= AnimationToken then
+			return
+		end
+
+		for i, block in ipairs(OverlayBlocks) do
+			local width = RNG:NextInteger(16, 64)
+			local height = RNG:NextInteger(8, 22)
+			local x = RNG:NextInteger(0, math.max(0, math.floor(Panel.AbsoluteSize.X) - width - 8))
+			local y = RNG:NextInteger(4, math.max(10, math.floor(Panel.AbsoluteSize.Y) - height - 6))
+			local pick = RNG:NextInteger(1, 3)
+			local color = (pick == 1 and SETTINGS.Accent) or (pick == 2 and SETTINGS.Hot) or Color3.fromRGB(255, 255, 255)
+
+			block.BackgroundColor3 = color
+			block.Size = UDim2.new(0, width, 0, height)
+			block.Position = UDim2.new(0, x, 0, y)
+			block.Visible = true
+			block.BackgroundTransparency = 0.15
+
+			local fadeIn = 0.02 + (i * 0.003)
+			local fadeOut = 0.13 + (i * 0.004)
+
+			tween(block, TweenInfo.new(fadeIn, Enum.EasingStyle.Linear), {BackgroundTransparency = 0.45})
+			task.delay(fadeOut, function()
+				if token ~= AnimationToken then
+					return
+				end
+				tween(block, TweenInfo.new(0.12, Enum.EasingStyle.Linear), {BackgroundTransparency = 1})
+			end)
+		end
+	end)
+
+	task.delay(0.16, function()
+		if token ~= AnimationToken then
+			return
+		end
+		tween(OverlayOrangeBar, TweenInfo.new(0.08, Enum.EasingStyle.Linear), {Size = UDim2.new(0, 164, 0, 16)})
+		task.delay(0.09, function()
+			if token ~= AnimationToken then
+				return
+			end
+			tween(OverlayOrangeBar, TweenInfo.new(0.14, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+				Size = UDim2.new(0, 0, 0, 16),
+				BackgroundTransparency = 1,
+			})
+		end)
+	end)
+
+	task.delay(0.17, function()
+		if token ~= AnimationToken then
+			return
+		end
+		tween(OverlayTag, TweenInfo.new(0.07, Enum.EasingStyle.Linear), {TextTransparency = 0})
+		task.delay(0.24, function()
+			if token ~= AnimationToken then
+				return
+			end
+			tween(OverlayTag, TweenInfo.new(0.16, Enum.EasingStyle.Linear), {TextTransparency = 1})
+		end)
+	end)
+
+	task.delay(0.62, function()
+		if token ~= AnimationToken then
+			return
+		end
+		SelectionOverlay.Visible = false
+		resetOverlayBlocks()
+	end)
 end
 
-local function evaluateNumericField(fieldName, value, moveState)
-    if value == nil or value <= 0 then
-        return nil, nil, false
-    end
+local function findMoveSlot(move, fallbackIndex)
+	local explicit = tonumber(getAttribute(move, "Key", nil))
+	if explicit then
+		return explicit
+	end
 
-    local remaining = nil
-    local maxCooldown = nil
-    local triggered = false
+	local nameNumber = tonumber(string.match(move.Name, "(%d+)"))
+	if nameNumber then
+		return nameNumber
+	end
 
-    if isStrongRemainingName(fieldName) then
-        remaining = value
-        maxCooldown = value
-    elseif isBaseCooldownName(fieldName) then
-        maxCooldown = value
-    elseif isWeakTimerName(fieldName) then
-        if moveState.MaxCooldown > 0 then
-            if value <= moveState.MaxCooldown + 0.25 then
-                remaining = value
-            else
-                maxCooldown = value
-            end
-        else
-            remaining = value
-            maxCooldown = value
-        end
-    elseif isTriggerName(fieldName) then
-        triggered = true
-    end
-
-    return remaining, maxCooldown, triggered
-end
-
-local function updateFromValue(moveInstance, moveState, now)
-    local valueNow = clampNumber(moveInstance.Value, 0) or 0
-    local valueRemaining = nil
-
-    if moveState.LastValue == nil then
-        moveState.LastValue = valueNow
-    elseif valueNow ~= moveState.LastValue then
-        if valueNow > moveState.LastValue then
-            moveState.MaxCooldown = math.max(moveState.MaxCooldown, valueNow)
-            moveState.StartedAt = now
-            moveState.LastObservedRemaining = valueNow
-        elseif valueNow > 0 and moveState.MaxCooldown > 0 and valueNow <= moveState.MaxCooldown + 0.25 then
-            valueRemaining = valueNow
-        elseif valueNow <= 0 then
-            resetMoveState(moveState, valueNow)
-        end
-
-        moveState.LastValue = valueNow
-    end
-
-    if valueNow > moveState.MaxCooldown then
-        moveState.MaxCooldown = valueNow
-    end
-
-    return valueRemaining
-end
-
-local function scanAttributes(moveInstance, moveState, now)
-    local remaining = nil
-    local maxCooldown = nil
-
-    for attrName, rawValue in pairs(moveInstance:GetAttributes()) do
-        local numericValue = clampNumber(rawValue, nil)
-        local oldValue = moveState.AttrCache[attrName]
-
-        if numericValue ~= nil then
-            local fieldRemaining, fieldMax, fieldTriggered = evaluateNumericField(attrName, numericValue, moveState)
-
-            if fieldRemaining and (remaining == nil or fieldRemaining > remaining) then
-                remaining = fieldRemaining
-            end
-
-            if fieldMax and (maxCooldown == nil or fieldMax > maxCooldown) then
-                maxCooldown = fieldMax
-            end
-
-            if oldValue ~= rawValue and fieldTriggered then
-                moveState.StartedAt = now
-            end
-        elseif type(rawValue) == "boolean" then
-            if oldValue ~= rawValue and rawValue == true and isBooleanTriggerName(attrName) then
-                moveState.StartedAt = now
-            end
-        end
-
-        moveState.AttrCache[attrName] = rawValue
-    end
-
-    return remaining, maxCooldown
-end
-
-local function scanChildren(moveInstance, moveState, now)
-    local remaining = nil
-    local maxCooldown = nil
-
-    for _, child in ipairs(moveInstance:GetChildren()) do
-        local childName = child.Name
-
-        if child:IsA("NumberValue") or child:IsA("IntValue") then
-            local numericValue = clampNumber(child.Value, nil)
-            if numericValue ~= nil then
-                local oldValue = moveState.ChildCache[childName]
-                local fieldRemaining, fieldMax, fieldTriggered = evaluateNumericField(childName, numericValue, moveState)
-
-                if fieldRemaining and (remaining == nil or fieldRemaining > remaining) then
-                    remaining = fieldRemaining
-                end
-
-                if fieldMax and (maxCooldown == nil or fieldMax > maxCooldown) then
-                    maxCooldown = fieldMax
-                end
-
-                if oldValue ~= numericValue and fieldTriggered then
-                    moveState.StartedAt = now
-                end
-
-                moveState.ChildCache[childName] = numericValue
-            end
-        elseif child:IsA("BoolValue") then
-            local oldValue = moveState.ChildCache[childName]
-            if oldValue ~= child.Value and child.Value == true and isBooleanTriggerName(childName) then
-                moveState.StartedAt = now
-            end
-            moveState.ChildCache[childName] = child.Value
-        end
-    end
-
-    return remaining, maxCooldown
-end
-
-local function applyObservedRemaining(moveState, observedRemaining, now)
-    if observedRemaining == nil or observedRemaining <= 0 then
-        return false
-    end
-
-    if observedRemaining > moveState.MaxCooldown then
-        moveState.MaxCooldown = observedRemaining
-    end
-
-    local lastObserved = moveState.LastObservedRemaining
-    if lastObserved == nil or math.abs(observedRemaining - lastObserved) > 0.01 then
-        moveState.StartedAt = now - math.max(0, moveState.MaxCooldown - observedRemaining)
-        moveState.LastObservedRemaining = observedRemaining
-        return true
-    end
-
-    return false
-end
-
-local function buildMoveEntry(moveInstance, key, moveState, now)
-    local valueRemaining = updateFromValue(moveInstance, moveState, now)
-    local attrRemaining, attrMax = scanAttributes(moveInstance, moveState, now)
-    local childRemaining, childMax = scanChildren(moveInstance, moveState, now)
-
-    if attrMax then
-        moveState.MaxCooldown = math.max(moveState.MaxCooldown, attrMax)
-    end
-
-    if childMax then
-        moveState.MaxCooldown = math.max(moveState.MaxCooldown, childMax)
-    end
-
-    local observedRemaining = attrRemaining or childRemaining or valueRemaining
-    applyObservedRemaining(moveState, observedRemaining, now)
-
-    local remaining = 0
-    if moveState.StartedAt > 0 and moveState.MaxCooldown > 0 then
-        local elapsed = now - moveState.StartedAt
-        if elapsed < moveState.MaxCooldown then
-            remaining = moveState.MaxCooldown - elapsed
-        else
-            resetMoveState(moveState, moveState.LastValue or 0)
-            remaining = 0
-        end
-    elseif observedRemaining and observedRemaining > 0 then
-        remaining = observedRemaining
-    end
-
-    remaining = math.max(0, clampNumber(remaining, 0) or 0)
-    if remaining <= 0 then
-        return nil
-    end
-
-    moveState.Key = key
-
-    return {
-        Name = moveInstance.Name,
-        Key = key,
-        Cooldown = math.max(moveState.MaxCooldown, remaining, 0.01),
-        Remaining = remaining,
-    }
+	return fallbackIndex
 end
 
 local function buildSnapshot(character, now)
-    local humanoid = getHumanoid(character)
-    local root = getRoot(character)
+	local humanoid = getHumanoid(character)
+	local root = getRoot(character)
+	if not humanoid or not root or humanoid.Health <= 0 then
+		return nil
+	end
 
-    if not humanoid or not root or humanoid.Health <= 0 then
-        return nil
-    end
+	local moveset = character:FindFirstChild("Moveset")
+	local characterState = MoveStates[character] or {}
+	local validStateEntries = {}
+	local moves = {}
 
-    local moveset = character:FindFirstChild("Moveset")
-    local charState = MoveStates[character] or {}
-    local activeMoves = {}
+	if moveset then
+		local children = moveset:GetChildren()
+		table.sort(children, function(a, b)
+			local aKey = findMoveSlot(a, 1)
+			local bKey = findMoveSlot(b, 1)
+			if aKey == bKey then
+				return a.Name < b.Name
+			end
+			return aKey < bKey
+		end)
 
-    if moveset then
-        for idx, moveInstance in ipairs(moveset:GetChildren()) do
-            local key = tonumber(getAttribute(moveInstance, "Key", idx)) or idx
+		for index, move in ipairs(children) do
+			local slot = findMoveSlot(move, index)
+			local baseValue = tonumber(move.Value) or 0
 
-            local moveState = charState[moveInstance.Name]
-            if not moveState then
-                moveState = {
-                    MaxCooldown = math.max(clampNumber(moveInstance.Value, 0) or 0, 0),
-                    LastValue = nil,
-                    StartedAt = 0,
-                    Key = key,
-                    AttrCache = {},
-                    ChildCache = {},
-                    LastObservedRemaining = nil,
-                }
-                charState[moveInstance.Name] = moveState
-            end
+			local state = characterState[move] or {
+				MaxCooldown = baseValue,
+				LastBaseValue = baseValue,
+				TimeStarted = 0,
+				AttrCache = {},
+				ChildCache = {},
+			}
 
-            local entry = buildMoveEntry(moveInstance, key, moveState, now)
-            if entry then
-                table.insert(activeMoves, entry)
-            end
-        end
+			validStateEntries[move] = true
 
-        table.sort(activeMoves, function(a, b)
-            if a.Key == b.Key then
-                return a.Name < b.Name
-            end
-            return a.Key < b.Key
-        end)
-    end
+			if baseValue > state.MaxCooldown then
+				state.MaxCooldown = baseValue
+			end
 
-    MoveStates[character] = charState
+			local remaining = 0
+			local cooldown = math.max(state.MaxCooldown, baseValue, 0)
 
-    return {
-        Character = character,
-        Label = characterLabel(character),
-        RootPosition = root.Position,
-        Moves = activeMoves,
-    }
+			if baseValue ~= state.LastBaseValue then
+				if baseValue > state.LastBaseValue and baseValue > 0 then
+					state.MaxCooldown = math.max(state.MaxCooldown, baseValue)
+					state.TimeStarted = now
+				elseif baseValue < state.LastBaseValue and baseValue > 0 then
+					state.TimeStarted = now - math.max(0, state.MaxCooldown - baseValue)
+				end
+				state.LastBaseValue = baseValue
+			end
+
+			for attrName, attrValue in pairs(move:GetAttributes()) do
+				local lower = string.lower(attrName)
+				local cached = state.AttrCache[attrName]
+
+				if cached ~= attrValue then
+					if type(attrValue) == "number" then
+						if (string.find(lower, "last") or string.find(lower, "start") or string.find(lower, "tick") or string.find(lower, "use")) and attrValue > 0 then
+							state.TimeStarted = now
+						elseif (string.find(lower, "cooldown") or string.find(lower, "remain") or string.find(lower, "time")) and attrValue > 0 then
+							state.MaxCooldown = math.max(state.MaxCooldown, attrValue)
+							remaining = math.max(remaining, attrValue)
+							state.TimeStarted = now - math.max(0, state.MaxCooldown - attrValue)
+						end
+					elseif type(attrValue) == "boolean" then
+						if attrValue and (string.find(lower, "cooldown") or string.find(lower, "cd") or string.find(lower, "active") or string.find(lower, "used")) then
+							state.TimeStarted = now
+						end
+					end
+
+					state.AttrCache[attrName] = attrValue
+				end
+
+				if type(attrValue) == "number" and (string.find(lower, "cooldown") or string.find(lower, "remain") or string.find(lower, "time")) and attrValue > 0 then
+					remaining = math.max(remaining, attrValue)
+					state.MaxCooldown = math.max(state.MaxCooldown, attrValue)
+				end
+			end
+
+			for _, child in ipairs(move:GetChildren()) do
+				if child:IsA("NumberValue") or child:IsA("IntValue") then
+					local lower = string.lower(child.Name)
+					local value = tonumber(child.Value) or 0
+					local cached = state.ChildCache[child]
+
+					if cached ~= value then
+						if value > 0 and value > (cached or 0) and (string.find(lower, "cooldown") or string.find(lower, "remain") or string.find(lower, "time") or string.find(lower, "tick") or string.find(lower, "cd")) then
+							state.TimeStarted = now
+						end
+						state.ChildCache[child] = value
+					end
+
+					if value > 0 and (string.find(lower, "cooldown") or string.find(lower, "remain") or string.find(lower, "time") or string.find(lower, "tick") or string.find(lower, "cd")) then
+						remaining = math.max(remaining, value)
+						state.MaxCooldown = math.max(state.MaxCooldown, value)
+					end
+				end
+			end
+
+			cooldown = math.max(cooldown, state.MaxCooldown, 0)
+
+			if remaining <= 0 and state.TimeStarted > 0 and cooldown > 0 then
+				local elapsed = now - state.TimeStarted
+				if elapsed < cooldown then
+					remaining = cooldown - elapsed
+				else
+					state.TimeStarted = 0
+				end
+			end
+
+			characterState[move] = state
+
+			table.insert(moves, {
+				Name = move.Name,
+				Slot = slot,
+				Cooldown = math.max(cooldown, 1),
+				Remaining = math.max(remaining, 0),
+			})
+		end
+	end
+
+	for moveObject in pairs(characterState) do
+		if not validStateEntries[moveObject] then
+			characterState[moveObject] = nil
+		end
+	end
+
+	MoveStates[character] = characterState
+
+	return {
+		Character = character,
+		Label = characterLabel(character),
+		Moves = moves,
+		RootPosition = root.Position,
+	}
 end
 
 local function refreshSnapshots(now)
-    local valid = {}
+	local valid = {}
 
-    for _, character in ipairs(getCharacters()) do
-        local snapshot = buildSnapshot(character, now)
-        if snapshot then
-            Snapshots[character] = snapshot
-            valid[character] = true
-        end
-    end
+	for _, character in ipairs(getCharacters()) do
+		local snapshot = buildSnapshot(character, now)
+		if snapshot then
+			Snapshots[character] = snapshot
+			valid[character] = true
+		end
+	end
 
-    for character in pairs(Snapshots) do
-        if not valid[character] then
-            Snapshots[character] = nil
-            MoveStates[character] = nil
-            if LockedTarget == character then
-                LockedTarget = nil
-            end
-        end
-    end
+	for character in pairs(Snapshots) do
+		if not valid[character] then
+			Snapshots[character] = nil
+			MoveStates[character] = nil
+			if ActiveTarget == character then
+				ActiveTarget = nil
+				LastAnimatedTarget = nil
+			end
+		end
+	end
+end
+
+local function getSlotMap(snapshot)
+	local slotMap = {}
+	local spill = {}
+
+	if not snapshot then
+		return slotMap
+	end
+
+	for _, move in ipairs(snapshot.Moves) do
+		if move.Slot >= 1 and move.Slot <= SETTINGS.RowCount and not slotMap[move.Slot] then
+			slotMap[move.Slot] = move
+		else
+			table.insert(spill, move)
+		end
+	end
+
+	local spillIndex = 1
+	for slot = 1, SETTINGS.RowCount do
+		if not slotMap[slot] then
+			slotMap[slot] = spill[spillIndex]
+			spillIndex += 1
+		end
+	end
+
+	return slotMap
+end
+
+local function applyNoTargetRow(row)
+	row.BoxText.Text = "+"
+	row.BoxText.TextColor3 = SETTINGS.SubText
+	row.Name.Text = "NO TARGET"
+	row.Name.TextColor3 = SETTINGS.SubText
+	row.Timer.Text = ""
+	row.Timer.TextColor3 = SETTINGS.SubText
+	row.Fill.BackgroundColor3 = SETTINGS.AccentSoft
+	row.Fill.Size = UDim2.new(0, 0, 1, 0)
+	row.Stroke.Color = SETTINGS.Stroke
+	row.BoxStroke.Color = SETTINGS.Stroke
 end
 
 local function renderSnapshot(snapshot)
-    if not snapshot then
-        TargetLabel.Text = "Target: -"
-        Status.Text = "Look at a player and press Z to target."
-        hideRows()
-        return
-    end
+	if not snapshot then
+		Status.Text = "LOOK AT A PLAYER AND PRESS Z"
+		TargetLabel.Text = "TARGET: NONE"
+		InfoAccent.BackgroundColor3 = SETTINGS.Accent
+		for i = 1, SETTINGS.RowCount do
+			applyNoTargetRow(Rows[i])
+		end
+		return
+	end
 
-    TargetLabel.Text = "Target: " .. snapshot.Label
+	Status.Text = "LIVE COOLDOWN LINK ACTIVE"
+	TargetLabel.Text = "TARGET: " .. upper(snapshot.Label)
+	InfoAccent.BackgroundColor3 = SETTINGS.Hot
 
-    if #snapshot.Moves > 0 then
-        Status.Text = "Tracking target cooldowns... Press Z again on same target to clear."
-    else
-        Status.Text = "Locked on target. No active cooldowns found."
-    end
+	local slotMap = getSlotMap(snapshot)
 
-    for i, row in ipairs(Rows) do
-        local move = snapshot.Moves[i]
+	for slot = 1, SETTINGS.RowCount do
+		local row = Rows[slot]
+		local move = slotMap[slot]
 
-        if move then
-            row.Visible = true
-            row.Label.Text = move.Name
-            row.Time.Text = string.format("%.1f", move.Remaining)
+		row.BoxText.Text = tostring(slot)
+		row.BoxText.TextColor3 = SETTINGS.Text
+		row.BoxStroke.Color = SETTINGS.Line
 
-            local ratio = 0
-            if move.Cooldown > 0 then
-                ratio = math.clamp(move.Remaining / move.Cooldown, 0, 1)
-            end
+		if move then
+			row.Name.Text = upper(move.Name)
+			row.Name.TextColor3 = SETTINGS.Text
 
-            row.BarBack.Fill.Size = UDim2.new(ratio, 0, 1, 0)
-        else
-            row.Visible = false
-            row.Label.Text = ""
-            row.Time.Text = ""
-            row.BarBack.Fill.Size = UDim2.new(0, 0, 1, 0)
-        end
-    end
+			if move.Remaining > 0 then
+				local ratio = math.clamp(move.Remaining / math.max(move.Cooldown, 0.001), 0, 1)
+				row.Timer.Text = string.format("%.1f", move.Remaining)
+				row.Timer.TextColor3 = SETTINGS.Hot
+				row.Fill.BackgroundColor3 = SETTINGS.Cooldown
+				row.Fill.Size = UDim2.new(ratio, 0, 1, 0)
+				row.Stroke.Color = SETTINGS.HotSoft
+			else
+				row.Timer.Text = "READY"
+				row.Timer.TextColor3 = SETTINGS.SubText
+				row.Fill.BackgroundColor3 = SETTINGS.Ready
+				row.Fill.Size = UDim2.new(1, 0, 1, 0)
+				row.Stroke.Color = SETTINGS.AccentSoft
+			end
+		else
+			row.Name.Text = "EMPTY"
+			row.Name.TextColor3 = SETTINGS.SubText
+			row.Timer.Text = "--"
+			row.Timer.TextColor3 = SETTINGS.SubText
+			row.Fill.BackgroundColor3 = SETTINGS.AccentSoft
+			row.Fill.Size = UDim2.new(0, 0, 1, 0)
+			row.Stroke.Color = SETTINGS.Stroke
+		end
+	end
+end
+
+local function findBestTarget()
+	if not Camera then
+		return nil
+	end
+
+	local viewportCenter = Vector2.new(Camera.ViewportSize.X * 0.5, Camera.ViewportSize.Y * 0.5)
+	local bestTarget = nil
+	local bestScore = nil
+
+	for character, snapshot in pairs(Snapshots) do
+		if character ~= LocalPlayer.Character then
+			local humanoid = getHumanoid(character)
+			local root = getRoot(character)
+
+			if humanoid and root and humanoid.Health > 0 then
+				local worldPos, onScreen = Camera:WorldToViewportPoint(root.Position)
+				if onScreen and worldPos.Z > 0 then
+					local offset = root.Position - Camera.CFrame.Position
+					local distance = offset.Magnitude
+					if distance <= SETTINGS.TargetMaxDistance then
+						local dot = Camera.CFrame.LookVector:Dot(offset.Unit)
+						if dot >= SETTINGS.TargetMinDot then
+							local screenDist = (Vector2.new(worldPos.X, worldPos.Y) - viewportCenter).Magnitude
+							local score = screenDist + (distance * 0.18) - (dot * 100)
+							if bestScore == nil or score < bestScore then
+								bestScore = score
+								bestTarget = character
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+
+	return bestTarget
 end
 
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if gameProcessed or input.KeyCode ~= Enum.KeyCode.Z then
-        return
-    end
+	if gameProcessed then
+		return
+	end
 
-    local target = acquireBestTarget(Snapshots)
+	if input.KeyCode == Enum.KeyCode.Z then
+		local bestTarget = findBestTarget()
 
-    if LockedTarget and target == LockedTarget then
-        LockedTarget = nil
-        Status.Text = "Target cleared. Look at a player and press Z to target."
-        renderSnapshot(nil)
-        return
-    end
-
-    if target then
-        LockedTarget = target
-        renderSnapshot(Snapshots[target])
-    elseif LockedTarget then
-        Status.Text = "Still locked on current target."
-    else
-        Status.Text = "No target found in front of you."
-        renderSnapshot(nil)
-    end
+		if bestTarget then
+			if ActiveTarget == bestTarget then
+				ActiveTarget = nil
+				LastAnimatedTarget = nil
+			else
+				ActiveTarget = bestTarget
+				local snapshot = Snapshots[bestTarget]
+				if snapshot then
+					playSelectionAnimation(snapshot.Label)
+					LastAnimatedTarget = bestTarget
+				end
+			end
+		else
+			ActiveTarget = nil
+			LastAnimatedTarget = nil
+		end
+	end
 end)
 
 if LocalPlayer.Character then
-    Victim.Text = "Player: " .. LocalPlayer.Name
+	renderSnapshot(nil)
 end
 
 LocalPlayer.CharacterAdded:Connect(function()
-    Victim.Text = "Player: " .. LocalPlayer.Name
+	ActiveTarget = nil
+	LastAnimatedTarget = nil
+	renderSnapshot(nil)
 end)
-
-hideRows()
-print("[CooldownTracker] Rewritten tracker v2 loaded.")
 
 RunService.RenderStepped:Connect(function()
-    local now = tick()
+	local now = tick()
+	refreshSnapshots(now)
 
-    refreshSnapshots(now)
-
-    if LockedTarget then
-        local snapshot = Snapshots[LockedTarget]
-        if snapshot then
-            renderSnapshot(snapshot)
-        else
-            LockedTarget = nil
-            renderSnapshot(nil)
-        end
-    else
-        renderSnapshot(nil)
-    end
+	if ActiveTarget then
+		local snapshot = Snapshots[ActiveTarget]
+		if snapshot then
+			renderSnapshot(snapshot)
+		else
+			ActiveTarget = nil
+			LastAnimatedTarget = nil
+			renderSnapshot(nil)
+		end
+	else
+		renderSnapshot(nil)
+	end
 end)
+
+print("[CooldownTracker] Marathon UI loaded")
