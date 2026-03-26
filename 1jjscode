@@ -457,6 +457,7 @@ end
 local function resetMoveState(moveState, valueNow)
     moveState.StartedAt = 0
     moveState.LastValue = valueNow
+    moveState.LastObservedRemaining = nil
 end
 
 local function evaluateNumericField(fieldName, value, moveState)
@@ -494,7 +495,6 @@ end
 local function updateFromValue(moveInstance, moveState, now)
     local valueNow = clampNumber(moveInstance.Value, 0) or 0
     local valueRemaining = nil
-    local started = false
 
     if moveState.LastValue == nil then
         moveState.LastValue = valueNow
@@ -502,10 +502,9 @@ local function updateFromValue(moveInstance, moveState, now)
         if valueNow > moveState.LastValue then
             moveState.MaxCooldown = math.max(moveState.MaxCooldown, valueNow)
             moveState.StartedAt = now
-            started = true
+            moveState.LastObservedRemaining = valueNow
         elseif valueNow > 0 and moveState.MaxCooldown > 0 and valueNow <= moveState.MaxCooldown + 0.25 then
             valueRemaining = valueNow
-            moveState.StartedAt = now - math.max(0, moveState.MaxCooldown - valueNow)
         elseif valueNow <= 0 then
             resetMoveState(moveState, valueNow)
         end
@@ -517,13 +516,12 @@ local function updateFromValue(moveInstance, moveState, now)
         moveState.MaxCooldown = valueNow
     end
 
-    return valueNow, valueRemaining, started
+    return valueRemaining
 end
 
 local function scanAttributes(moveInstance, moveState, now)
     local remaining = nil
     local maxCooldown = nil
-    local triggered = false
 
     for attrName, rawValue in pairs(moveInstance:GetAttributes()) do
         local numericValue = clampNumber(rawValue, nil)
@@ -541,12 +539,10 @@ local function scanAttributes(moveInstance, moveState, now)
             end
 
             if oldValue ~= rawValue and fieldTriggered then
-                triggered = true
                 moveState.StartedAt = now
             end
         elseif type(rawValue) == "boolean" then
             if oldValue ~= rawValue and rawValue == true and isBooleanTriggerName(attrName) then
-                triggered = true
                 moveState.StartedAt = now
             end
         end
@@ -554,13 +550,12 @@ local function scanAttributes(moveInstance, moveState, now)
         moveState.AttrCache[attrName] = rawValue
     end
 
-    return remaining, maxCooldown, triggered
+    return remaining, maxCooldown
 end
 
 local function scanChildren(moveInstance, moveState, now)
     local remaining = nil
     local maxCooldown = nil
-    local triggered = false
 
     for _, child in ipairs(moveInstance:GetChildren()) do
         local childName = child.Name
@@ -580,7 +575,6 @@ local function scanChildren(moveInstance, moveState, now)
                 end
 
                 if oldValue ~= numericValue and fieldTriggered then
-                    triggered = true
                     moveState.StartedAt = now
                 end
 
@@ -589,23 +583,38 @@ local function scanChildren(moveInstance, moveState, now)
         elseif child:IsA("BoolValue") then
             local oldValue = moveState.ChildCache[childName]
             if oldValue ~= child.Value and child.Value == true and isBooleanTriggerName(childName) then
-                triggered = true
                 moveState.StartedAt = now
             end
             moveState.ChildCache[childName] = child.Value
         end
     end
 
-    return remaining, maxCooldown, triggered
+    return remaining, maxCooldown
+end
+
+local function applyObservedRemaining(moveState, observedRemaining, now)
+    if observedRemaining == nil or observedRemaining <= 0 then
+        return false
+    end
+
+    if observedRemaining > moveState.MaxCooldown then
+        moveState.MaxCooldown = observedRemaining
+    end
+
+    local lastObserved = moveState.LastObservedRemaining
+    if lastObserved == nil or math.abs(observedRemaining - lastObserved) > 0.01 then
+        moveState.StartedAt = now - math.max(0, moveState.MaxCooldown - observedRemaining)
+        moveState.LastObservedRemaining = observedRemaining
+        return true
+    end
+
+    return false
 end
 
 local function buildMoveEntry(moveInstance, key, moveState, now)
-    local _, valueRemaining = updateFromValue(moveInstance, moveState, now)
-
+    local valueRemaining = updateFromValue(moveInstance, moveState, now)
     local attrRemaining, attrMax = scanAttributes(moveInstance, moveState, now)
     local childRemaining, childMax = scanChildren(moveInstance, moveState, now)
-
-    local remaining = nil
 
     if attrMax then
         moveState.MaxCooldown = math.max(moveState.MaxCooldown, attrMax)
@@ -615,42 +624,33 @@ local function buildMoveEntry(moveInstance, key, moveState, now)
         moveState.MaxCooldown = math.max(moveState.MaxCooldown, childMax)
     end
 
-    if attrRemaining ~= nil then
-        remaining = attrRemaining
-        moveState.MaxCooldown = math.max(moveState.MaxCooldown, attrRemaining)
-        moveState.StartedAt = now - math.max(0, moveState.MaxCooldown - attrRemaining)
-    elseif childRemaining ~= nil then
-        remaining = childRemaining
-        moveState.MaxCooldown = math.max(moveState.MaxCooldown, childRemaining)
-        moveState.StartedAt = now - math.max(0, moveState.MaxCooldown - childRemaining)
-    elseif valueRemaining ~= nil then
-        remaining = valueRemaining
-    end
+    local observedRemaining = attrRemaining or childRemaining or valueRemaining
+    applyObservedRemaining(moveState, observedRemaining, now)
 
-    if remaining == nil and moveState.StartedAt > 0 and moveState.MaxCooldown > 0 then
+    local remaining = 0
+    if moveState.StartedAt > 0 and moveState.MaxCooldown > 0 then
         local elapsed = now - moveState.StartedAt
         if elapsed < moveState.MaxCooldown then
             remaining = moveState.MaxCooldown - elapsed
         else
-            moveState.StartedAt = 0
+            resetMoveState(moveState, moveState.LastValue or 0)
             remaining = 0
         end
+    elseif observedRemaining and observedRemaining > 0 then
+        remaining = observedRemaining
     end
 
     remaining = math.max(0, clampNumber(remaining, 0) or 0)
-
     if remaining <= 0 then
         return nil
     end
-
-    local cooldown = math.max(moveState.MaxCooldown, remaining, 0.01)
 
     moveState.Key = key
 
     return {
         Name = moveInstance.Name,
         Key = key,
-        Cooldown = cooldown,
+        Cooldown = math.max(moveState.MaxCooldown, remaining, 0.01),
         Remaining = remaining,
     }
 end
@@ -680,6 +680,7 @@ local function buildSnapshot(character, now)
                     Key = key,
                     AttrCache = {},
                     ChildCache = {},
+                    LastObservedRemaining = nil,
                 }
                 charState[moveInstance.Name] = moveState
             end
@@ -741,7 +742,7 @@ local function renderSnapshot(snapshot)
     TargetLabel.Text = "Target: " .. snapshot.Label
 
     if #snapshot.Moves > 0 then
-        Status.Text = "Tracking target cooldowns... Press Z again to clear."
+        Status.Text = "Tracking target cooldowns... Press Z again on same target to clear."
     else
         Status.Text = "Locked on target. No active cooldowns found."
     end
@@ -774,17 +775,20 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
         return
     end
 
-    if LockedTarget then
+    local target = acquireBestTarget(Snapshots)
+
+    if LockedTarget and target == LockedTarget then
         LockedTarget = nil
         Status.Text = "Target cleared. Look at a player and press Z to target."
         renderSnapshot(nil)
         return
     end
 
-    local target = acquireBestTarget(Snapshots)
     if target then
         LockedTarget = target
         renderSnapshot(Snapshots[target])
+    elseif LockedTarget then
+        Status.Text = "Still locked on current target."
     else
         Status.Text = "No target found in front of you."
         renderSnapshot(nil)
@@ -800,7 +804,7 @@ LocalPlayer.CharacterAdded:Connect(function()
 end)
 
 hideRows()
-print("[CooldownTracker] Rewritten tracker loaded.")
+print("[CooldownTracker] Rewritten tracker v2 loaded.")
 
 RunService.RenderStepped:Connect(function()
     local now = tick()
