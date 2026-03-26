@@ -376,48 +376,80 @@ if val ~= state.LastVal then
     state.LastVal = val
 end
 
-            -- Method 2: Check for any Attributes dynamically changing (Timestamps, booleans, or explicit remaining times)
-            local attrs = moveInstance:GetAttributes()
-            for attrName, attrVal in pairs(attrs) do
-                local lowerName = attrName:lower()
-                local lastAttr = state.AttrCache[attrName]
-                
-                if lastAttr ~= attrVal then
-                    if type(attrVal) == "number" then
-                        if lowerName:match("last") or lowerName:match("start") or lowerName:match("tick") or lowerName:match("use") then
-                            state.TimeStarted = now
-                        elseif lowerName:match("cooldown") or lowerName:match("remain") or lowerName:match("time") then
-                            if attrVal > 0 then
-                                state.TimeStarted = now - math.max(0, state.MaxCooldown - attrVal)
-                            end
-                        end
-                    elseif type(attrVal) == "boolean" then
-                        if attrVal == true and (lowerName:match("cooldown") or lowerName:match("cd") or lowerName:match("active") or lowerName:match("used")) then
-                            state.TimeStarted = now
-                        end
-                    end
-                    state.AttrCache[attrName] = attrVal
+            -- Method 2: Check for any Attributes dynamically changing
+local attrs = moveInstance:GetAttributes()
+for attrName, attrVal in pairs(attrs) do
+    local lowerName = attrName:lower()
+    local lastAttr = state.AttrCache[attrName]
+
+    if type(attrVal) == "number" then
+        -- Base/max cooldown config
+        if lowerName:match("cooldown") and not (
+            lowerName:match("remain") or
+            lowerName:match("left") or
+            lowerName:match("timeleft")
+        ) then
+            if attrVal > state.MaxCooldown then
+                state.MaxCooldown = attrVal
+            end
+            cooldown = math.max(cooldown, state.MaxCooldown)
+        end
+
+        -- Explicit live remaining time
+        if lowerName:match("remain") or lowerName:match("left") or lowerName:match("timeleft") then
+            if attrVal > 0 then
+                remaining = attrVal
+                if attrVal > state.MaxCooldown then
+                    state.MaxCooldown = attrVal
                 end
-                
-                if type(attrVal) == "number" and (lowerName:match("cooldown") or lowerName:match("remain")) and attrVal > 0 then
-                    remaining = attrVal
-                    if attrVal > cooldown then cooldown = attrVal; state.MaxCooldown = attrVal end
+                cooldown = math.max(cooldown, state.MaxCooldown)
+            end
+        end
+
+        -- Trigger inferred countdown when timing attrs change
+        if lastAttr ~= attrVal then
+            if lowerName:match("last") or lowerName:match("start") or lowerName:match("tick") or lowerName:match("use") then
+                state.TimeStarted = now
+            elseif (lowerName:match("remain") or lowerName:match("left") or lowerName:match("timeleft")) and attrVal > 0 then
+                state.TimeStarted = now - math.max(0, state.MaxCooldown - attrVal)
+            end
+        end
+    elseif type(attrVal) == "boolean" then
+        if lastAttr ~= attrVal then
+            if attrVal == true and (lowerName:match("cooldown") or lowerName:match("cd") or lowerName:match("active") or lowerName:match("used")) then
+                state.TimeStarted = now
+            end
+        end
+    end
+
+    state.AttrCache[attrName] = attrVal
+end
+
+-- Method 3: Check for Child Values tracking cooldowns dynamically
+for _, child in ipairs(moveInstance:GetChildren()) do
+    if child:IsA("NumberValue") or child:IsA("IntValue") then
+        local childName = child.Name:lower()
+        local cVal = tonumber(child.Value) or 0
+
+        -- Explicit live remaining time
+        if childName:match("remain") or childName:match("left") or childName:match("timeleft") then
+            if cVal > 0 then
+                remaining = cVal
+                if cVal > state.MaxCooldown then
+                    state.MaxCooldown = cVal
                 end
+                cooldown = math.max(cooldown, state.MaxCooldown)
             end
 
-            -- Method 3: Check for Child Values tracking cooldowns dynamically
-            for _, child in ipairs(moveInstance:GetChildren()) do
-                if child:IsA("NumberValue") or child:IsA("IntValue") then
-                    local childName = child.Name:lower()
-                    if childName:match("cooldown") or childName:match("time") or childName:match("remain") or childName:match("tick") then
-                        local cVal = child.Value
-                        if cVal > 0 then
-                            remaining = cVal
-                            if cVal > cooldown then cooldown = cVal; state.MaxCooldown = cVal end
-                        end
-                    end
-                end
+        -- Base/max cooldown config
+        elseif childName:match("cooldown") then
+            if cVal > state.MaxCooldown then
+                state.MaxCooldown = cVal
             end
+            cooldown = math.max(cooldown, state.MaxCooldown)
+        end
+    end
+end
 
             -- Calculate local remaining time if a trigger was hit but no explicit remaining variable exists
             if remaining == 0 and state.TimeStarted > 0 and cooldown > 0 then
