@@ -43,6 +43,8 @@ local SETTINGS = {
 	BarBack = Color3.fromRGB(220, 223, 212),
 	Ready = Color3.fromRGB(214, 255, 34),
 	Cooldown = Color3.fromRGB(255, 92, 43),
+	BootBlue = Color3.fromRGB(21, 39, 255),
+	BootGrid = Color3.fromRGB(55, 71, 47),
 
 	TitleFont = Enum.Font.Bodoni,
 	LabelFont = Enum.Font.GothamMedium,
@@ -54,8 +56,8 @@ local RNG = Random.new()
 local MoveStates = {}
 local Snapshots = {}
 local ActiveTarget = nil
-local LastAnimatedTarget = nil
 local AnimationToken = 0
+local BootComplete = false
 
 local function getAttribute(inst, attr, default)
 	if not inst then
@@ -121,12 +123,263 @@ local function tween(object, info, props)
 	return t
 end
 
+local function quickFade(object, toTransparency, timeLength)
+	return tween(object, TweenInfo.new(timeLength, Enum.EasingStyle.Linear), {
+		BackgroundTransparency = toTransparency,
+	})
+end
+
 local Gui = Instance.new("ScreenGui")
 Gui.Name = "CooldownTracker_Marathon"
 Gui.ResetOnSpawn = false
 Gui.IgnoreGuiInset = true
 Gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 Gui.Parent = GuiParent
+
+local BootOverlay = Instance.new("Frame")
+BootOverlay.Name = "BootOverlay"
+BootOverlay.Size = UDim2.new(1, 0, 1, 0)
+BootOverlay.BackgroundColor3 = Color3.fromRGB(9, 11, 10)
+BootOverlay.BorderSizePixel = 0
+BootOverlay.Parent = Gui
+
+local EdgeHolder = Instance.new("Frame")
+EdgeHolder.BackgroundTransparency = 1
+EdgeHolder.Size = UDim2.new(1, 0, 1, 0)
+EdgeHolder.Parent = BootOverlay
+
+local function createEdge(name, size, position, color, z)
+	local frame = Instance.new("Frame")
+	frame.Name = name
+	frame.Size = size
+	frame.Position = position
+	frame.BackgroundColor3 = color
+	frame.BorderSizePixel = 0
+	frame.ZIndex = z
+	frame.Parent = EdgeHolder
+	return frame
+end
+
+local TopEdge = createEdge("TopEdge", UDim2.new(1, 0, 0, 26), UDim2.new(0, 0, 0, 0), SETTINGS.Accent, 5)
+local BottomEdge = createEdge("BottomEdge", UDim2.new(1, 0, 0, 26), UDim2.new(0, 0, 1, -26), SETTINGS.Accent, 5)
+local LeftEdge = createEdge("LeftEdge", UDim2.new(0, 26, 1, 0), UDim2.new(0, 0, 0, 0), SETTINGS.Accent, 5)
+local RightEdge = createEdge("RightEdge", UDim2.new(0, 26, 1, 0), UDim2.new(1, -26, 0, 0), SETTINGS.Accent, 5)
+
+local function addLine(parent, size, position, color, transparency, z)
+	local line = Instance.new("Frame")
+	line.Size = size
+	line.Position = position
+	line.BackgroundColor3 = color
+	line.BackgroundTransparency = transparency or 0
+	line.BorderSizePixel = 0
+	line.ZIndex = z or 6
+	line.Parent = parent
+	return line
+end
+
+for i = 1, 14 do
+	addLine(TopEdge, UDim2.new(0, 2, 1, -6), UDim2.new(0, 12 + ((i - 1) * 28), 0, 3), SETTINGS.Line, 0.85, 6)
+	addLine(BottomEdge, UDim2.new(0, 2, 1, -6), UDim2.new(0, 12 + ((i - 1) * 28), 0, 3), SETTINGS.Line, 0.85, 6)
+end
+
+for i = 1, 12 do
+	addLine(LeftEdge, UDim2.new(1, -6, 0, 2), UDim2.new(0, 3, 0, 14 + ((i - 1) * 28)), SETTINGS.Line, 0.85, 6)
+	addLine(RightEdge, UDim2.new(1, -6, 0, 2), UDim2.new(0, 3, 0, 14 + ((i - 1) * 28)), SETTINGS.Line, 0.85, 6)
+end
+
+local EdgeScanTop = addLine(TopEdge, UDim2.new(0, 0, 1, 0), UDim2.new(0, 0, 0, 0), SETTINGS.Hot, 0.15, 7)
+local EdgeScanBottom = addLine(BottomEdge, UDim2.new(0, 0, 1, 0), UDim2.new(0, 0, 0, 0), SETTINGS.Hot, 0.15, 7)
+local EdgeScanLeft = addLine(LeftEdge, UDim2.new(1, 0, 0, 0), UDim2.new(0, 0, 0, 0), SETTINGS.Hot, 0.15, 7)
+local EdgeScanRight = addLine(RightEdge, UDim2.new(1, 0, 0, 0), UDim2.new(0, 0, 0, 0), SETTINGS.Hot, 0.15, 7)
+
+local PixelField = Instance.new("Frame")
+PixelField.BackgroundTransparency = 1
+PixelField.Size = UDim2.new(1, -52, 1, -52)
+PixelField.Position = UDim2.new(0, 26, 0, 26)
+PixelField.ClipsDescendants = true
+PixelField.Parent = BootOverlay
+
+local PixelBlocks = {}
+for i = 1, 80 do
+	local block = Instance.new("Frame")
+	block.BorderSizePixel = 0
+	block.BackgroundColor3 = (i % 5 == 0 and SETTINGS.Hot) or (i % 2 == 0 and SETTINGS.Accent) or SETTINGS.Background
+	block.BackgroundTransparency = 1
+	block.Size = UDim2.new(0, RNG:NextInteger(8, 32), 0, RNG:NextInteger(2, 12))
+	block.Position = UDim2.new(0, RNG:NextInteger(0, 900), 0, RNG:NextInteger(0, 500))
+	block.ZIndex = 3
+	block.Parent = PixelField
+	PixelBlocks[i] = block
+end
+
+local BootCenter = Instance.new("Frame")
+BootCenter.Name = "BootCenter"
+BootCenter.AnchorPoint = Vector2.new(0.5, 0.5)
+BootCenter.Position = UDim2.new(0.5, 0, 0.5, 0)
+BootCenter.Size = UDim2.new(0, 330, 0, 164)
+BootCenter.BackgroundColor3 = SETTINGS.Background
+BootCenter.BorderSizePixel = 0
+BootCenter.ZIndex = 10
+BootCenter.Parent = BootOverlay
+
+local BootCorner = Instance.new("UICorner")
+BootCorner.CornerRadius = UDim.new(0, 16)
+BootCorner.Parent = BootCenter
+
+local BootStroke = Instance.new("UIStroke")
+BootStroke.Color = SETTINGS.Stroke
+BootStroke.Thickness = 1
+BootStroke.Parent = BootCenter
+
+local BootHeader = Instance.new("Frame")
+BootHeader.Size = UDim2.new(1, 0, 0, 32)
+BootHeader.BackgroundColor3 = SETTINGS.Accent
+BootHeader.BorderSizePixel = 0
+BootHeader.ZIndex = 11
+BootHeader.Parent = BootCenter
+
+local BootHeaderCorner = Instance.new("UICorner")
+BootHeaderCorner.CornerRadius = UDim.new(0, 16)
+BootHeaderCorner.Parent = BootHeader
+
+local BootHeaderFix = Instance.new("Frame")
+BootHeaderFix.Size = UDim2.new(1, 0, 0, 12)
+BootHeaderFix.Position = UDim2.new(0, 0, 1, -12)
+BootHeaderFix.BackgroundColor3 = SETTINGS.Accent
+BootHeaderFix.BorderSizePixel = 0
+BootHeaderFix.ZIndex = 11
+BootHeaderFix.Parent = BootHeader
+
+local BootHeaderText = Instance.new("TextLabel")
+BootHeaderText.BackgroundTransparency = 1
+BootHeaderText.Size = UDim2.new(1, -20, 1, 0)
+BootHeaderText.Position = UDim2.new(0, 10, 0, 0)
+BootHeaderText.ZIndex = 12
+BootHeaderText.Text = "SYSTEM BOOT // EXFIL NODE"
+BootHeaderText.TextColor3 = SETTINGS.Text
+BootHeaderText.TextXAlignment = Enum.TextXAlignment.Left
+BootHeaderText.Font = SETTINGS.MonoFont
+BootHeaderText.TextSize = 12
+BootHeaderText.Parent = BootHeader
+
+local BootBody = Instance.new("Frame")
+BootBody.BackgroundColor3 = SETTINGS.BackgroundAlt
+BootBody.BorderSizePixel = 0
+BootBody.Size = UDim2.new(1, -16, 1, -48)
+BootBody.Position = UDim2.new(0, 8, 0, 40)
+BootBody.ZIndex = 11
+BootBody.Parent = BootCenter
+
+local BootBodyCorner = Instance.new("UICorner")
+BootBodyCorner.CornerRadius = UDim.new(0, 12)
+BootBodyCorner.Parent = BootBody
+
+local BootBodyStroke = Instance.new("UIStroke")
+BootBodyStroke.Color = SETTINGS.Stroke
+BootBodyStroke.Thickness = 1
+BootBodyStroke.Transparency = 0.2
+BootBodyStroke.Parent = BootBody
+
+local BootGrid = Instance.new("Frame")
+BootGrid.BackgroundTransparency = 1
+BootGrid.Size = UDim2.new(1, -24, 0, 40)
+BootGrid.Position = UDim2.new(0, 12, 0, 10)
+BootGrid.ZIndex = 12
+BootGrid.Parent = BootBody
+
+for row = 0, 4 do
+	for col = 0, 19 do
+		local dot = Instance.new("Frame")
+		dot.BackgroundColor3 = SETTINGS.BootGrid
+		dot.BackgroundTransparency = 0.25
+		dot.BorderSizePixel = 0
+		dot.Size = UDim2.new(0, 8, 0, 6)
+		dot.Position = UDim2.new(0, col * 14, 0, row * 8)
+		dot.ZIndex = 12
+		dot.Parent = BootGrid
+	end
+end
+
+local BootStatus = Instance.new("TextLabel")
+BootStatus.BackgroundTransparency = 1
+BootStatus.Size = UDim2.new(1, -24, 0, 18)
+BootStatus.Position = UDim2.new(0, 12, 0, 60)
+BootStatus.ZIndex = 12
+BootStatus.Text = "ESTABLISHING LINK"
+BootStatus.TextColor3 = SETTINGS.Text
+BootStatus.TextXAlignment = Enum.TextXAlignment.Left
+BootStatus.Font = SETTINGS.LabelFont
+BootStatus.TextSize = 15
+BootStatus.Parent = BootBody
+
+local BootSub = Instance.new("TextLabel")
+BootSub.BackgroundTransparency = 1
+BootSub.Size = UDim2.new(1, -24, 0, 16)
+BootSub.Position = UDim2.new(0, 12, 0, 80)
+BootSub.ZIndex = 12
+BootSub.Text = "WAITING FOR RESPONSE..."
+BootSub.TextColor3 = SETTINGS.SubText
+BootSub.TextXAlignment = Enum.TextXAlignment.Left
+BootSub.Font = SETTINGS.MonoFont
+BootSub.TextSize = 11
+BootSub.Parent = BootBody
+
+local BootProgressBack = Instance.new("Frame")
+BootProgressBack.BackgroundColor3 = SETTINGS.BarBack
+BootProgressBack.BorderSizePixel = 0
+BootProgressBack.Size = UDim2.new(1, -24, 0, 8)
+BootProgressBack.Position = UDim2.new(0, 12, 1, -24)
+BootProgressBack.ZIndex = 12
+BootProgressBack.Parent = BootBody
+
+local BootProgressBackCorner = Instance.new("UICorner")
+BootProgressBackCorner.CornerRadius = UDim.new(1, 0)
+BootProgressBackCorner.Parent = BootProgressBack
+
+local BootProgress = Instance.new("Frame")
+BootProgress.BackgroundColor3 = SETTINGS.Hot
+BootProgress.BorderSizePixel = 0
+BootProgress.Size = UDim2.new(0, 0, 1, 0)
+BootProgress.ZIndex = 13
+BootProgress.Parent = BootProgressBack
+
+local BootProgressCorner = Instance.new("UICorner")
+BootProgressCorner.CornerRadius = UDim.new(1, 0)
+BootProgressCorner.Parent = BootProgress
+
+local BootSidePanel = Instance.new("Frame")
+BootSidePanel.BackgroundColor3 = SETTINGS.BootBlue
+BootSidePanel.BorderSizePixel = 0
+BootSidePanel.Size = UDim2.new(0, 58, 0, 148)
+BootSidePanel.Position = UDim2.new(0.5, -226, 0.5, -74)
+BootSidePanel.ZIndex = 9
+BootSidePanel.Parent = BootOverlay
+
+local BootSideStroke = Instance.new("UIStroke")
+BootSideStroke.Color = SETTINGS.Background
+BootSideStroke.Thickness = 1
+BootSideStroke.Parent = BootSidePanel
+
+for i = 1, 10 do
+	local segment = Instance.new("Frame")
+	segment.BackgroundColor3 = (i % 3 == 0 and SETTINGS.Background) or SETTINGS.Accent
+	segment.BorderSizePixel = 0
+	segment.Size = UDim2.new(0, 30, 0, 6)
+	segment.Position = UDim2.new(0, 14, 0, 10 + ((i - 1) * 13))
+	segment.ZIndex = 10
+	segment.Parent = BootSidePanel
+end
+
+local BootSideLabel = Instance.new("TextLabel")
+BootSideLabel.BackgroundTransparency = 1
+BootSideLabel.Size = UDim2.new(1, 0, 0, 18)
+BootSideLabel.Position = UDim2.new(0, 0, 1, -24)
+BootSideLabel.Text = "LINK"
+BootSideLabel.TextColor3 = SETTINGS.Background
+BootSideLabel.Font = SETTINGS.NumberFont
+BootSideLabel.TextSize = 16
+BootSideLabel.ZIndex = 10
+BootSideLabel.Parent = BootSidePanel
 
 local Panel = Instance.new("Frame")
 Panel.Name = "Panel"
@@ -135,6 +388,7 @@ Panel.Position = SETTINGS.PanelPosition
 Panel.BackgroundColor3 = SETTINGS.Background
 Panel.BorderSizePixel = 0
 Panel.Active = true
+Panel.Visible = false
 Panel.Parent = Gui
 
 local PanelCorner = Instance.new("UICorner")
@@ -175,7 +429,7 @@ local Title = Instance.new("TextLabel")
 Title.BackgroundTransparency = 1
 Title.Size = UDim2.new(1, -16, 0, 28)
 Title.Position = UDim2.new(0, 12, 0, 2)
-Title.Text = "COOLDOWNS"
+Title.Text = "EXFILTRATED"
 Title.TextColor3 = SETTINGS.Text
 Title.TextXAlignment = Enum.TextXAlignment.Left
 Title.TextYAlignment = Enum.TextYAlignment.Center
@@ -187,7 +441,7 @@ local Subtitle = Instance.new("TextLabel")
 Subtitle.BackgroundTransparency = 1
 Subtitle.Size = UDim2.new(1, -16, 0, 16)
 Subtitle.Position = UDim2.new(0, 13, 0, 31)
-Subtitle.Text = "COOLDOWN LINK"
+Subtitle.Text = "PERIMETER | RUN"
 Subtitle.TextColor3 = SETTINGS.Text
 Subtitle.TextXAlignment = Enum.TextXAlignment.Left
 Subtitle.Font = SETTINGS.MonoFont
@@ -234,7 +488,7 @@ local Status = Instance.new("TextLabel")
 Status.BackgroundTransparency = 1
 Status.Position = UDim2.new(0, 16, 0, 5)
 Status.Size = UDim2.new(1, -22, 0, 16)
-Status.Text = "-COOLDOWN LINK DEACTIVATED-"
+Status.Text = "LOOK AT A PLAYER AND PRESS Z"
 Status.TextColor3 = SETTINGS.SubText
 Status.TextXAlignment = Enum.TextXAlignment.Left
 Status.Font = SETTINGS.MonoFont
@@ -597,6 +851,149 @@ local function playSelectionAnimation(targetName)
 	end)
 end
 
+local function playBootSequence()
+	if BootComplete then
+		return
+	end
+
+	BootComplete = true
+	Panel.Visible = false
+	BootOverlay.Visible = true
+	BootOverlay.BackgroundTransparency = 0
+	BootCenter.Size = UDim2.new(0, 290, 0, 144)
+	BootCenter.Position = UDim2.new(0.5, 0, 0.5, 8)
+	BootCenter.BackgroundTransparency = 1
+	BootHeader.BackgroundTransparency = 1
+	BootBody.BackgroundTransparency = 1
+	BootStatus.TextTransparency = 1
+	BootSub.TextTransparency = 1
+	BootHeaderText.TextTransparency = 1
+	BootProgress.Size = UDim2.new(0, 0, 1, 0)
+	BootSidePanel.BackgroundTransparency = 1
+	BootSideLabel.TextTransparency = 1
+	BootSideStroke.Transparency = 1
+	BootStroke.Transparency = 1
+
+	for _, block in ipairs(PixelBlocks) do
+		block.BackgroundTransparency = 1
+	end
+
+	EdgeScanTop.Size = UDim2.new(0, 0, 1, 0)
+	EdgeScanBottom.Size = UDim2.new(0, 0, 1, 0)
+	EdgeScanLeft.Size = UDim2.new(1, 0, 0, 0)
+	EdgeScanRight.Size = UDim2.new(1, 0, 0, 0)
+
+	tween(BootCenter, TweenInfo.new(0.18, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+		Size = UDim2.new(0, 330, 0, 164),
+		Position = UDim2.new(0.5, 0, 0.5, 0),
+		BackgroundTransparency = 0,
+	})
+	tween(BootHeader, TweenInfo.new(0.16, Enum.EasingStyle.Linear), {BackgroundTransparency = 0})
+	tween(BootBody, TweenInfo.new(0.16, Enum.EasingStyle.Linear), {BackgroundTransparency = 0})
+	tween(BootStatus, TweenInfo.new(0.12, Enum.EasingStyle.Linear), {TextTransparency = 0})
+	tween(BootSub, TweenInfo.new(0.12, Enum.EasingStyle.Linear), {TextTransparency = 0})
+	tween(BootHeaderText, TweenInfo.new(0.12, Enum.EasingStyle.Linear), {TextTransparency = 0})
+	tween(BootSidePanel, TweenInfo.new(0.12, Enum.EasingStyle.Linear), {BackgroundTransparency = 0})
+	tween(BootSideLabel, TweenInfo.new(0.12, Enum.EasingStyle.Linear), {TextTransparency = 0})
+	tween(BootStroke, TweenInfo.new(0.12, Enum.EasingStyle.Linear), {Transparency = 0})
+	tween(BootSideStroke, TweenInfo.new(0.12, Enum.EasingStyle.Linear), {Transparency = 0})
+
+	tween(EdgeScanTop, TweenInfo.new(0.35, Enum.EasingStyle.Linear), {Size = UDim2.new(1, 0, 1, 0)})
+	tween(EdgeScanBottom, TweenInfo.new(0.35, Enum.EasingStyle.Linear), {Size = UDim2.new(1, 0, 1, 0)})
+	tween(EdgeScanLeft, TweenInfo.new(0.35, Enum.EasingStyle.Linear), {Size = UDim2.new(1, 0, 1, 0)})
+	tween(EdgeScanRight, TweenInfo.new(0.35, Enum.EasingStyle.Linear), {Size = UDim2.new(1, 0, 1, 0)})
+
+	for i, block in ipairs(PixelBlocks) do
+		task.delay((i % 10) * 0.015, function()
+			if not BootOverlay.Parent then
+				return
+			end
+			block.Position = UDim2.new(0, RNG:NextInteger(0, math.max(0, PixelField.AbsoluteSize.X - 10)), 0, RNG:NextInteger(0, math.max(0, PixelField.AbsoluteSize.Y - 10)))
+			block.Size = UDim2.new(0, RNG:NextInteger(8, 32), 0, RNG:NextInteger(2, 12))
+			block.BackgroundTransparency = 0.2
+			tween(block, TweenInfo.new(0.22, Enum.EasingStyle.Linear), {BackgroundTransparency = 1})
+		end)
+	end
+
+	tween(BootProgress, TweenInfo.new(0.7, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+		Size = UDim2.new(0.66, 0, 1, 0),
+	})
+
+	task.delay(0.72, function()
+		if not BootOverlay.Parent then
+			return
+		end
+		BootStatus.Text = "ACCESS GRANTED"
+		BootSub.Text = "COOLDOWN NODE READY"
+		BootProgress.BackgroundColor3 = SETTINGS.Accent
+		tween(BootProgress, TweenInfo.new(0.35, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+			Size = UDim2.new(1, 0, 1, 0),
+		})
+	end)
+
+	task.delay(1.08, function()
+		if not BootOverlay.Parent then
+			return
+		end
+
+		for i, block in ipairs(PixelBlocks) do
+			task.delay(i * 0.004, function()
+				if block and block.Parent then
+					block.BackgroundTransparency = 0.05
+					tween(block, TweenInfo.new(0.16, Enum.EasingStyle.Linear), {BackgroundTransparency = 1})
+				end
+			end)
+		end
+
+		tween(BootCenter, TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {
+			Position = UDim2.new(0.5, 0, 0.5, -10),
+			BackgroundTransparency = 1,
+		})
+		tween(BootHeader, TweenInfo.new(0.18, Enum.EasingStyle.Linear), {BackgroundTransparency = 1})
+		tween(BootBody, TweenInfo.new(0.18, Enum.EasingStyle.Linear), {BackgroundTransparency = 1})
+		tween(BootStatus, TweenInfo.new(0.14, Enum.EasingStyle.Linear), {TextTransparency = 1})
+		tween(BootSub, TweenInfo.new(0.14, Enum.EasingStyle.Linear), {TextTransparency = 1})
+		tween(BootHeaderText, TweenInfo.new(0.14, Enum.EasingStyle.Linear), {TextTransparency = 1})
+		tween(BootSidePanel, TweenInfo.new(0.18, Enum.EasingStyle.Linear), {BackgroundTransparency = 1})
+		tween(BootSideLabel, TweenInfo.new(0.14, Enum.EasingStyle.Linear), {TextTransparency = 1})
+		tween(BootStroke, TweenInfo.new(0.14, Enum.EasingStyle.Linear), {Transparency = 1})
+		tween(BootSideStroke, TweenInfo.new(0.14, Enum.EasingStyle.Linear), {Transparency = 1})
+		quickFade(TopEdge, 1, 0.25)
+		quickFade(BottomEdge, 1, 0.25)
+		quickFade(LeftEdge, 1, 0.25)
+		quickFade(RightEdge, 1, 0.25)
+		quickFade(EdgeScanTop, 1, 0.2)
+		quickFade(EdgeScanBottom, 1, 0.2)
+		quickFade(EdgeScanLeft, 1, 0.2)
+		quickFade(EdgeScanRight, 1, 0.2)
+		quickFade(BootOverlay, 1, 0.3)
+	end)
+
+	task.delay(1.42, function()
+		if not BootOverlay.Parent then
+			return
+		end
+		Panel.Visible = true
+		Panel.BackgroundTransparency = 1
+		Header.BackgroundTransparency = 1
+		Info.BackgroundTransparency = 1
+		RowsHolder.BackgroundTransparency = 1
+		Panel.Position = UDim2.new(SETTINGS.PanelPosition.X.Scale, SETTINGS.PanelPosition.X.Offset - 8, SETTINGS.PanelPosition.Y.Scale, SETTINGS.PanelPosition.Y.Offset + 10)
+		tween(Panel, TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+			BackgroundTransparency = 0,
+			Position = SETTINGS.PanelPosition,
+		})
+		tween(Header, TweenInfo.new(0.18, Enum.EasingStyle.Linear), {BackgroundTransparency = 0})
+		tween(Info, TweenInfo.new(0.18, Enum.EasingStyle.Linear), {BackgroundTransparency = 0})
+	end)
+
+	task.delay(1.8, function()
+		if BootOverlay and BootOverlay.Parent then
+			BootOverlay:Destroy()
+		end
+	end)
+end
+
 local function findMoveSlot(move, fallbackIndex)
 	local explicit = tonumber(getAttribute(move, "Key", nil))
 	if explicit then
@@ -768,7 +1165,6 @@ local function refreshSnapshots(now)
 			MoveStates[character] = nil
 			if ActiveTarget == character then
 				ActiveTarget = nil
-				LastAnimatedTarget = nil
 			end
 		end
 	end
@@ -912,41 +1308,44 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		return
 	end
 
+	if not Panel.Visible then
+		return
+	end
+
 	if input.KeyCode == Enum.KeyCode.Z then
 		local bestTarget = findBestTarget()
 
 		if bestTarget then
 			if ActiveTarget == bestTarget then
 				ActiveTarget = nil
-				LastAnimatedTarget = nil
 			else
 				ActiveTarget = bestTarget
 				local snapshot = Snapshots[bestTarget]
 				if snapshot then
 					playSelectionAnimation(snapshot.Label)
-					LastAnimatedTarget = bestTarget
 				end
 			end
 		else
 			ActiveTarget = nil
-			LastAnimatedTarget = nil
 		end
 	end
 end)
 
-if LocalPlayer.Character then
-	renderSnapshot(nil)
-end
-
 LocalPlayer.CharacterAdded:Connect(function()
 	ActiveTarget = nil
-	LastAnimatedTarget = nil
 	renderSnapshot(nil)
 end)
+
+renderSnapshot(nil)
+playBootSequence()
 
 RunService.RenderStepped:Connect(function()
 	local now = tick()
 	refreshSnapshots(now)
+
+	if not Panel.Visible then
+		return
+	end
 
 	if ActiveTarget then
 		local snapshot = Snapshots[ActiveTarget]
@@ -954,7 +1353,6 @@ RunService.RenderStepped:Connect(function()
 			renderSnapshot(snapshot)
 		else
 			ActiveTarget = nil
-			LastAnimatedTarget = nil
 			renderSnapshot(nil)
 		end
 	else
