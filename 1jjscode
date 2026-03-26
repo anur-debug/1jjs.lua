@@ -346,50 +346,35 @@ local function BuildSnapshot(character, now)
             local key = tonumber(GetAttribute(moveInstance, "Key", idx)) or idx
             local val = tonumber(moveInstance.Value) or 0
             
-            local state = charState[moveInstance.Name]
-if not state then
-    state = {
-        MaxCooldown = 0,
-        LastVal = nil,
-        TimeStarted = 0,
-        Key = key,
-        AttrCache = {}
-    }
+            local state = charState[moveInstance.Name] or {
+    MaxCooldown = val,
+    LastVal = val,
+    TimeStarted = 0,
+    Key = key,
+    AttrCache = {}
+}
+
+-- Update MaxCooldown if the value is permanently larger
+if val > state.MaxCooldown then
+    state.MaxCooldown = val
 end
 
 local remaining = 0
-local cooldown = math.max(state.MaxCooldown, val, 0)
+local cooldown = state.MaxCooldown
 
--- Treat Value as a live remaining cooldown if it's above 0.
--- This lets the UI keep updating continuously after target lock.
-if val > 0 then
-    remaining = val
-
-    if state.LastVal == nil then
-        -- First time seeing this move while it is already on cooldown
-        state.MaxCooldown = math.max(state.MaxCooldown, val)
-        cooldown = state.MaxCooldown
-        state.TimeStarted = now - math.max(0, cooldown - val)
-    elseif val ~= state.LastVal then
-        if val > state.LastVal then
-            -- Cooldown restarted or refreshed
-            state.MaxCooldown = math.max(state.MaxCooldown, val)
-            cooldown = state.MaxCooldown
-            state.TimeStarted = now
-        else
-            -- Value is ticking downward normally
-            cooldown = math.max(state.MaxCooldown, state.LastVal, val)
-            state.MaxCooldown = cooldown
-            state.TimeStarted = now - math.max(0, cooldown - val)
-        end
+-- Only treat Value as a live cooldown if it is actually changing
+if val ~= state.LastVal then
+    if val < state.LastVal and val > 0 then
+        -- Value is ticking down
+        state.TimeStarted = now - (state.MaxCooldown - val)
+    elseif val > state.LastVal then
+        -- Cooldown restarted/refreshed
+        state.TimeStarted = now
+        state.MaxCooldown = val
+        cooldown = val
     end
-else
-    -- Move is ready again
-    state.TimeStarted = 0
+    state.LastVal = val
 end
-
-state.LastVal = val
-cooldown = math.max(state.MaxCooldown, val, 1)
 
             -- Method 2: Check for any Attributes dynamically changing (Timestamps, booleans, or explicit remaining times)
             local attrs = moveInstance:GetAttributes()
