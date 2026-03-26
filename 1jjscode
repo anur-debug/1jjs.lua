@@ -2,6 +2,7 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local CoreGui = game:GetService("CoreGui")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 repeat task.wait() until Players.LocalPlayer
 local LocalPlayer = Players.LocalPlayer
@@ -25,25 +26,6 @@ local Settings = {
     PanelSize = UDim2.new(0, 240, 0, 190),
     MaxRows = 7,
     ActiveSeconds = 8,
-    RecentAttackWindow = 2.4,
-    MaxAttackDistance = 24,
-    HitResolveWindow = 0.45,
-
-    Bg = Color3.fromRGB(20, 24, 31),
-    Top = Color3.fromRGB(28, 34, 44),
-    Card = Color3.fromRGB(34, 41, 53),
-    Stroke = Color3.fromRGB(78, 92, 114),
-    Text = Color3.fromRGB(235, 240, 248),
-    Sub = Color3.fromRGB(155, 170, 190),
-    Accent = Color3.fromRGB(110, 170, 255),
-    BarBack = Color3.fromRGB(15, 19, 27),
-    BarFill = Color3.fromRGB(86, 145, 255),
-}
-
-local PendingHit = false
-local PendingHitUntil = 0
-local PendingBestAttacker = nil
-local PendingBestScore = -math.huge
 
     Bg = Color3.fromRGB(20, 24, 31),
     Top = Color3.fromRGB(28, 34, 44),
@@ -158,7 +140,7 @@ Title.Font = Enum.Font.GothamSemibold
 Title.TextSize = 13
 Title.TextXAlignment = Enum.TextXAlignment.Left
 Title.TextColor3 = Settings.Text
-Title.Text = "Attacker Cooldowns"
+Title.Text = "Target Cooldowns"
 Title.Parent = Topbar
 
 local Info = Instance.new("Frame")
@@ -186,7 +168,7 @@ Status.Font = Enum.Font.GothamMedium
 Status.TextSize = 11
 Status.TextXAlignment = Enum.TextXAlignment.Left
 Status.TextColor3 = Settings.Sub
-Status.Text = "Loaded. Waiting for you to be hit..."
+Status.Text = "Look at a player and press Z to target."
 Status.Parent = Info
 
 local Victim = Instance.new("TextLabel")
@@ -197,7 +179,7 @@ Victim.Font = Enum.Font.Gotham
 Victim.TextSize = 11
 Victim.TextXAlignment = Enum.TextXAlignment.Left
 Victim.TextColor3 = Settings.Text
-Victim.Text = "Victim: " .. LocalPlayer.Name
+Victim.Text = "Player: " .. LocalPlayer.Name
 Victim.Parent = Info
 
 local Attacker = Instance.new("TextLabel")
@@ -208,7 +190,7 @@ Attacker.Font = Enum.Font.GothamSemibold
 Attacker.TextSize = 11
 Attacker.TextXAlignment = Enum.TextXAlignment.Left
 Attacker.TextColor3 = Settings.Accent
-Attacker.Text = "Attacker: -"
+Attacker.Text = "Target: -"
 Attacker.Parent = Info
 
 local Holder = Instance.new("Frame")
@@ -338,9 +320,6 @@ end)
 local MoveStates = {}
 local Snapshots = {}
 local ActiveAttacker = nil
-local ActiveUntil = 0
-local LastHealth = nil
-local HealthConnection = nil
 
 local function HideRows()
     for _, row in ipairs(Rows) do
@@ -361,45 +340,98 @@ local function BuildSnapshot(character, now)
     local moveset = character:FindFirstChild("Moveset")
     local charState = MoveStates[character] or {}
     local moves = {}
-    local lastRecentUse = 0
-    local recentUseCount = 0
 
     if moveset then
         for idx, moveInstance in ipairs(moveset:GetChildren()) do
             local key = tonumber(GetAttribute(moveInstance, "Key", idx)) or idx
-            local cooldown = tonumber(moveInstance.Value) or 0
-            local lastUse = tonumber(GetAttribute(moveInstance, "LastUse", 0)) or 0
-
+            local val = tonumber(moveInstance.Value) or 0
+            
             local state = charState[moveInstance.Name] or {
-                LastUse = 0,
+                MaxCooldown = val,
+                LastVal = val,
                 TimeStarted = 0,
-                Cooldown = cooldown,
                 Key = key,
+                AttrCache = {}
             }
 
-            if lastUse ~= state.LastUse then
-                state.LastUse = lastUse
-                state.TimeStarted = now
+            -- Update MaxCooldown if the value is permanently larger
+            if val > state.MaxCooldown then
+                state.MaxCooldown = val
             end
 
-            state.Cooldown = cooldown
-            state.Key = key
-            charState[moveInstance.Name] = state
-
             local remaining = 0
-            if state.TimeStarted > 0 and cooldown > 0 then
+            local cooldown = state.MaxCooldown
+
+            -- Method 1: Check if the Value property itself is dynamically ticking down
+            if val ~= state.LastVal then
+                if val < state.LastVal and val > 0 then
+                    state.TimeStarted = now - (state.MaxCooldown - val)
+                elseif val > state.LastVal then
+                    state.TimeStarted = now
+                    state.MaxCooldown = val
+                    cooldown = val
+                end
+                state.LastVal = val
+            end
+
+            -- Method 2: Check for any Attributes dynamically changing (Timestamps, booleans, or explicit remaining times)
+            local attrs = moveInstance:GetAttributes()
+            for attrName, attrVal in pairs(attrs) do
+                local lowerName = attrName:lower()
+                local lastAttr = state.AttrCache[attrName]
+                
+                if lastAttr ~= attrVal then
+                    if type(attrVal) == "number" then
+                        if lowerName:match("last") or lowerName:match("start") or lowerName:match("tick") or lowerName:match("use") then
+                            state.TimeStarted = now
+                        elseif lowerName:match("cooldown") or lowerName:match("remain") or lowerName:match("time") then
+                            if attrVal > 0 then
+                                state.TimeStarted = now - math.max(0, state.MaxCooldown - attrVal)
+                            end
+                        end
+                    elseif type(attrVal) == "boolean" then
+                        if attrVal == true and (lowerName:match("cooldown") or lowerName:match("cd") or lowerName:match("active") or lowerName:match("used")) then
+                            state.TimeStarted = now
+                        end
+                    end
+                    state.AttrCache[attrName] = attrVal
+                end
+                
+                if type(attrVal) == "number" and (lowerName:match("cooldown") or lowerName:match("remain")) and attrVal > 0 then
+                    remaining = attrVal
+                    if attrVal > cooldown then cooldown = attrVal; state.MaxCooldown = attrVal end
+                end
+            end
+
+            -- Method 3: Check for Child Values tracking cooldowns dynamically
+            for _, child in ipairs(moveInstance:GetChildren()) do
+                if child:IsA("NumberValue") or child:IsA("IntValue") then
+                    local childName = child.Name:lower()
+                    if childName:match("cooldown") or childName:match("time") or childName:match("remain") or childName:match("tick") then
+                        local cVal = child.Value
+                        if cVal > 0 then
+                            remaining = cVal
+                            if cVal > cooldown then cooldown = cVal; state.MaxCooldown = cVal end
+                        end
+                    end
+                end
+            end
+
+            -- Calculate local remaining time if a trigger was hit but no explicit remaining variable exists
+            if remaining == 0 and state.TimeStarted > 0 and cooldown > 0 then
                 local elapsed = now - state.TimeStarted
                 if elapsed < cooldown then
                     remaining = cooldown - elapsed
+                else
+                    state.TimeStarted = 0
                 end
             end
 
-            if state.TimeStarted > 0 and (now - state.TimeStarted) <= Settings.RecentAttackWindow then
-                recentUseCount += 1
-                if state.TimeStarted > lastRecentUse then
-                    lastRecentUse = state.TimeStarted
-                end
-            end
+            -- Prevent UI errors if a move has no inherent cooldown configuration
+            if cooldown <= 0 then cooldown = 1 end
+
+            state.Key = key
+            charState[moveInstance.Name] = state
 
             table.insert(moves, {
                 Name = moveInstance.Name,
@@ -421,8 +453,6 @@ local function BuildSnapshot(character, now)
         Label = CharacterLabel(character),
         RootPosition = root.Position,
         Moves = moves,
-        LastRecentUse = lastRecentUse,
-        RecentUseCount = recentUseCount,
     }
 end
 
@@ -443,54 +473,21 @@ local function RefreshSnapshots(now)
             MoveStates[character] = nil
             if ActiveAttacker == character then
                 ActiveAttacker = nil
-                ActiveUntil = 0
             end
         end
     end
 end
 
-local function FindLikelyAttacker(now)
-    local myCharacter = LocalPlayer.Character
-    local myRoot = GetRoot(myCharacter)
-    if not myCharacter or not myRoot then
-        return nil, -math.huge
-    end
-
-    local bestCharacter = nil
-    local bestScore = -math.huge
-
-    for character, snap in pairs(Snapshots) do
-        if character ~= myCharacter and snap.LastRecentUse > 0 then
-            local dist = (snap.RootPosition - myRoot.Position).Magnitude
-            if dist <= Settings.MaxAttackDistance then
-                local age = now - snap.LastRecentUse
-                local recencyScore = math.max(0, Settings.RecentAttackWindow - age) * 8
-                local distancePenalty = dist * 0.18
-                local moveCountBonus = (snap.RecentUseCount or 0) * 1.25
-
-                local score = recencyScore + moveCountBonus - distancePenalty
-
-                if score > bestScore then
-                    bestScore = score
-                    bestCharacter = character
-                end
-            end
-        end
-    end
-
-    return bestCharacter, bestScore
-end
-
-local function RenderSnapshot(snapshot, secondsLeft)
+local function RenderSnapshot(snapshot)
     if not snapshot then
-        Attacker.Text = "Attacker: -"
-        Status.Text = "Loaded. Waiting for you to be hit..."
+        Attacker.Text = "Target: -"
+        Status.Text = "Look at a player and press Z to target."
         HideRows()
         return
     end
 
-    Attacker.Text = "Attacker: " .. snapshot.Label
-    Status.Text = string.format("Triggered %.1fs ago window active", math.max(secondsLeft, 0))
+    Attacker.Text = "Target: " .. snapshot.Label
+    Status.Text = "Tracking target cooldowns..."
 
     for i, row in ipairs(Rows) do
         local move = snapshot.Moves[i]
@@ -514,94 +511,72 @@ local function RenderSnapshot(snapshot, secondsLeft)
     end
 end
 
-local function BindCharacter(character)
-    if HealthConnection then
-        HealthConnection:Disconnect()
-        HealthConnection = nil
-    end
+local TARGET_MAX_DISTANCE = 200
+local TARGET_FOV_DOT = 0.85 -- Controls the crosshair forgiveness. 1 is perfectly centered, 0.85 is a slight cone.
 
-    local humanoid = character and character:WaitForChild("Humanoid", 5)
-    if not humanoid then
-        Status.Text = "Loaded, but no humanoid found"
-        return
-    end
-
-    LastHealth = humanoid.Health
-    Victim.Text = "Victim: " .. LocalPlayer.Name
-    Status.Text = "Loaded. Waiting for you to be hit..."
-
-    HealthConnection = humanoid.HealthChanged:Connect(function(newHealth)
-        local oldHealth = LastHealth
-        LastHealth = newHealth
-
-        if oldHealth and newHealth < oldHealth then
-            local now = tick()
-
-            PendingHit = true
-            PendingHitUntil = now + Settings.HitResolveWindow
-            PendingBestAttacker = nil
-            PendingBestScore = -math.huge
-
-            Status.Text = "You were hit. Resolving attacker..."
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    
+    if input.KeyCode == Enum.KeyCode.Z then
+        local bestTarget = nil
+        local bestDot = TARGET_FOV_DOT
+        local camCFrame = Camera.CFrame
+        
+        for character, _ in pairs(Snapshots) do
+            if character ~= LocalPlayer.Character then
+                local root = GetRoot(character)
+                if root then
+                    local dist = (root.Position - camCFrame.Position).Magnitude
+                    if dist <= TARGET_MAX_DISTANCE then
+                        -- Calculate how closely they align with the center of the camera
+                        local dir = (root.Position - camCFrame.Position).Unit
+                        local dot = camCFrame.LookVector:Dot(dir)
+                        
+                        -- Keep track of whoever is closest to the exact center point
+                        if dot > bestDot then
+                            bestDot = dot
+                            bestTarget = character
+                        end
+                    end
+                end
+            end
         end
-    end)
-end
+
+        if bestTarget then
+            ActiveAttacker = bestTarget
+            RenderSnapshot(Snapshots[bestTarget])
+        else
+            -- If you press Z at nothing, it clears the current target
+            ActiveAttacker = nil
+            RenderSnapshot(nil)
+        end
+    end
+end)
 
 if LocalPlayer.Character then
-    BindCharacter(LocalPlayer.Character)
+    Victim.Text = "Player: " .. LocalPlayer.Name
 end
 
-LocalPlayer.CharacterAdded:Connect(function(character)
-    task.wait(0.15)
-    BindCharacter(character)
+LocalPlayer.CharacterAdded:Connect(function()
+    Victim.Text = "Player: " .. LocalPlayer.Name
 end)
 
 HideRows()
-print("[CooldownTracker] loaded")
+print("[CooldownTracker] Loaded with Manual Z Targeting")
 
 RunService.RenderStepped:Connect(function()
     local now = tick()
     RefreshSnapshots(now)
 
-    if PendingHit then
-        if now <= PendingHitUntil then
-            local attacker, score = FindLikelyAttacker(now)
-            if attacker and score > PendingBestScore then
-                PendingBestAttacker = attacker
-                PendingBestScore = score
-            end
-        else
-            PendingHit = false
-
-            if PendingBestAttacker then
-                ActiveAttacker = PendingBestAttacker
-                ActiveUntil = now + Settings.ActiveSeconds
-                Attacker.Text = "Attacker: " .. CharacterLabel(PendingBestAttacker)
-                Status.Text = "You were hit. Tracking attacker cooldowns..."
-            else
-                ActiveAttacker = nil
-                ActiveUntil = 0
-                Attacker.Text = "Attacker: ?"
-                Status.Text = "You were hit, but attacker was not found"
-                HideRows()
-            end
-        end
-    end
-
-    if ActiveAttacker and now <= ActiveUntil then
+    if ActiveAttacker then
         local snapshot = Snapshots[ActiveAttacker]
         if snapshot then
-            RenderSnapshot(snapshot, ActiveUntil - now)
+            RenderSnapshot(snapshot)
         else
             ActiveAttacker = nil
-            ActiveUntil = 0
-            RenderSnapshot(nil, 0)
+            RenderSnapshot(nil)
         end
-    elseif not PendingHit then
-        if ActiveAttacker then
-            ActiveAttacker = nil
-            ActiveUntil = 0
-        end
-        RenderSnapshot(nil, 0)
+    else
+        RenderSnapshot(nil)
     end
 end)
