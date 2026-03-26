@@ -346,33 +346,50 @@ local function BuildSnapshot(character, now)
             local key = tonumber(GetAttribute(moveInstance, "Key", idx)) or idx
             local val = tonumber(moveInstance.Value) or 0
             
-            local state = charState[moveInstance.Name] or {
-                MaxCooldown = val,
-                LastVal = val,
-                TimeStarted = 0,
-                Key = key,
-                AttrCache = {}
-            }
+            local state = charState[moveInstance.Name]
+if not state then
+    state = {
+        MaxCooldown = 0,
+        LastVal = nil,
+        TimeStarted = 0,
+        Key = key,
+        AttrCache = {}
+    }
+end
 
-            -- Update MaxCooldown if the value is permanently larger
-            if val > state.MaxCooldown then
-                state.MaxCooldown = val
-            end
+local remaining = 0
+local cooldown = math.max(state.MaxCooldown, val, 0)
 
-            local remaining = 0
-            local cooldown = state.MaxCooldown
+-- Treat Value as a live remaining cooldown if it's above 0.
+-- This lets the UI keep updating continuously after target lock.
+if val > 0 then
+    remaining = val
 
-            -- Method 1: Check if the Value property itself is dynamically ticking down
-            if val ~= state.LastVal then
-                if val < state.LastVal and val > 0 then
-                    state.TimeStarted = now - (state.MaxCooldown - val)
-                elseif val > state.LastVal then
-                    state.TimeStarted = now
-                    state.MaxCooldown = val
-                    cooldown = val
-                end
-                state.LastVal = val
-            end
+    if state.LastVal == nil then
+        -- First time seeing this move while it is already on cooldown
+        state.MaxCooldown = math.max(state.MaxCooldown, val)
+        cooldown = state.MaxCooldown
+        state.TimeStarted = now - math.max(0, cooldown - val)
+    elseif val ~= state.LastVal then
+        if val > state.LastVal then
+            -- Cooldown restarted or refreshed
+            state.MaxCooldown = math.max(state.MaxCooldown, val)
+            cooldown = state.MaxCooldown
+            state.TimeStarted = now
+        else
+            -- Value is ticking downward normally
+            cooldown = math.max(state.MaxCooldown, state.LastVal, val)
+            state.MaxCooldown = cooldown
+            state.TimeStarted = now - math.max(0, cooldown - val)
+        end
+    end
+else
+    -- Move is ready again
+    state.TimeStarted = 0
+end
+
+state.LastVal = val
+cooldown = math.max(state.MaxCooldown, val, 1)
 
             -- Method 2: Check for any Attributes dynamically changing (Timestamps, booleans, or explicit remaining times)
             local attrs = moveInstance:GetAttributes()
@@ -515,41 +532,47 @@ local TARGET_MAX_DISTANCE = 200
 local TARGET_FOV_DOT = 0.85 -- Controls the crosshair forgiveness. 1 is perfectly centered, 0.85 is a slight cone.
 
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if gameProcessed then return end
-    
-    if input.KeyCode == Enum.KeyCode.Z then
-        local bestTarget = nil
-        local bestDot = TARGET_FOV_DOT
-        local camCFrame = Camera.CFrame
-        
-        for character, _ in pairs(Snapshots) do
-            if character ~= LocalPlayer.Character then
-                local root = GetRoot(character)
-                if root then
-                    local dist = (root.Position - camCFrame.Position).Magnitude
-                    if dist <= TARGET_MAX_DISTANCE then
-                        -- Calculate how closely they align with the center of the camera
-                        local dir = (root.Position - camCFrame.Position).Unit
-                        local dot = camCFrame.LookVector:Dot(dir)
-                        
-                        -- Keep track of whoever is closest to the exact center point
-                        if dot > bestDot then
-                            bestDot = dot
-                            bestTarget = character
-                        end
+    if gameProcessed or input.KeyCode ~= Enum.KeyCode.Z then
+        return
+    end
+
+    -- Press Z again to clear the current locked target
+    if ActiveAttacker then
+        ActiveAttacker = nil
+        Status.Text = "Target cleared. Look at a player and press Z to target."
+        RenderSnapshot(nil)
+        return
+    end
+
+    local bestTarget = nil
+    local bestDot = TARGET_FOV_DOT
+    local camCFrame = Camera.CFrame
+
+    for character, _ in pairs(Snapshots) do
+        if character ~= LocalPlayer.Character then
+            local root = GetRoot(character)
+            if root then
+                local dist = (root.Position - camCFrame.Position).Magnitude
+                if dist <= TARGET_MAX_DISTANCE then
+                    local dir = (root.Position - camCFrame.Position).Unit
+                    local dot = camCFrame.LookVector:Dot(dir)
+
+                    if dot > bestDot then
+                        bestDot = dot
+                        bestTarget = character
                     end
                 end
             end
         end
+    end
 
-        if bestTarget then
-            ActiveAttacker = bestTarget
-            RenderSnapshot(Snapshots[bestTarget])
-        else
-            -- If you press Z at nothing, it clears the current target
-            ActiveAttacker = nil
-            RenderSnapshot(nil)
-        end
+    if bestTarget then
+        ActiveAttacker = bestTarget
+        Status.Text = "Tracking target cooldowns... Press Z again to clear."
+        RenderSnapshot(Snapshots[bestTarget])
+    else
+        Status.Text = "No target found in front of you."
+        RenderSnapshot(nil)
     end
 end)
 
