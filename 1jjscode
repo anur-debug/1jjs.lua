@@ -2,70 +2,74 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local CoreGui = game:GetService("CoreGui")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 repeat task.wait() until Players.LocalPlayer
+
 local LocalPlayer = Players.LocalPlayer
 local Camera = workspace.CurrentCamera
-
 local PlayerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui") or LocalPlayer:WaitForChild("PlayerGui", 5)
 local GuiParent = PlayerGui or CoreGui
 
 if not GuiParent then
-    warn("No GUI parent found")
+    warn("[CooldownTracker] No GUI parent found.")
     return
 end
 
-local OldGui = GuiParent:FindFirstChild("CooldownTracker_AttackedOnly")
+local OldGui = GuiParent:FindFirstChild("CooldownTracker_Rewrite")
 if OldGui then
     OldGui:Destroy()
 end
 
 local Settings = {
     PanelPosition = UDim2.new(0, 20, 0.6, 0),
-    PanelSize = UDim2.new(0, 240, 0, 190),
+    PanelSize = UDim2.new(0, 250, 0, 205),
     MaxRows = 7,
-    ActiveSeconds = 8,
 
-    Bg = Color3.fromRGB(20, 24, 31),
-    Top = Color3.fromRGB(28, 34, 44),
+    TargetMaxDistance = 200,
+    TargetFovDot = 0.85,
+
+    Background = Color3.fromRGB(20, 24, 31),
+    Topbar = Color3.fromRGB(28, 34, 44),
     Card = Color3.fromRGB(34, 41, 53),
     Stroke = Color3.fromRGB(78, 92, 114),
     Text = Color3.fromRGB(235, 240, 248),
-    Sub = Color3.fromRGB(155, 170, 190),
+    SubText = Color3.fromRGB(155, 170, 190),
     Accent = Color3.fromRGB(110, 170, 255),
     BarBack = Color3.fromRGB(15, 19, 27),
     BarFill = Color3.fromRGB(86, 145, 255),
 }
 
-local function GetAttribute(inst, attr, default)
+local function getAttribute(inst, attrName, default)
     if not inst then
         return default
     end
+
     local ok, value = pcall(function()
-        return inst:GetAttribute(attr)
+        return inst:GetAttribute(attrName)
     end)
+
     if ok and value ~= nil then
         return value
     end
+
     return default
 end
 
-local function GetRoot(character)
-    return character and character:FindFirstChild("HumanoidRootPart")
-end
-
-local function GetHumanoid(character)
+local function getHumanoid(character)
     return character and character:FindFirstChildOfClass("Humanoid")
 end
 
-local function GetCharacters()
+local function getRoot(character)
+    return character and character:FindFirstChild("HumanoidRootPart")
+end
+
+local function getCharacters()
     local list = {}
     local seen = {}
 
-    local folder = workspace:FindFirstChild("Characters")
-    if folder then
-        for _, obj in ipairs(folder:GetChildren()) do
+    local characterFolder = workspace:FindFirstChild("Characters")
+    if characterFolder then
+        for _, obj in ipairs(characterFolder:GetChildren()) do
             if obj:IsA("Model") then
                 seen[obj] = true
                 table.insert(list, obj)
@@ -73,24 +77,136 @@ local function GetCharacters()
         end
     end
 
-    for _, plr in ipairs(Players:GetPlayers()) do
-        local char = plr.Character
-        if char and char:IsA("Model") and not seen[char] then
-            seen[char] = true
-            table.insert(list, char)
+    for _, player in ipairs(Players:GetPlayers()) do
+        local character = player.Character
+        if character and character:IsA("Model") and not seen[character] then
+            seen[character] = true
+            table.insert(list, character)
         end
     end
 
     return list
 end
 
-local function CharacterLabel(character)
-    local plr = Players:GetPlayerFromCharacter(character)
-    return plr and plr.Name or character.Name
+local function characterLabel(character)
+    local player = Players:GetPlayerFromCharacter(character)
+    return player and player.Name or character.Name
+end
+
+local function lower(str)
+    return string.lower(tostring(str or ""))
+end
+
+local function nameHasAny(name, tokens)
+    local n = lower(name)
+    for _, token in ipairs(tokens) do
+        if string.find(n, token, 1, true) then
+            return true
+        end
+    end
+    return false
+end
+
+local function clampNumber(value, fallback)
+    value = tonumber(value)
+    if value == nil then
+        return fallback
+    end
+    return value
+end
+
+local STRONG_REMAINING_TOKENS = {
+    "remain",
+    "remaining",
+    "timeleft",
+    "left",
+    "lefttime",
+    "cooldownleft",
+    "currentcooldown",
+    "currentcd",
+}
+
+local BASE_COOLDOWN_TOKENS = {
+    "cooldown",
+    "maxcooldown",
+    "basecooldown",
+    "basedelay",
+    "maxcd",
+}
+
+local TRIGGER_TOKENS = {
+    "last",
+    "lastuse",
+    "lastused",
+    "start",
+    "started",
+    "use",
+    "used",
+    "activated",
+    "cast",
+    "fired",
+}
+
+local BOOLEAN_TRIGGER_TOKENS = {
+    "cooldown",
+    "cd",
+    "active",
+    "used",
+    "firing",
+}
+
+local function isStrongRemainingName(name)
+    return nameHasAny(name, STRONG_REMAINING_TOKENS)
+end
+
+local function isBaseCooldownName(name)
+    local n = lower(name)
+    if isStrongRemainingName(n) then
+        return false
+    end
+    return nameHasAny(n, BASE_COOLDOWN_TOKENS)
+end
+
+local function isWeakTimerName(name)
+    local n = lower(name)
+    return n == "time" or n == "tick" or n == "timer"
+end
+
+local function isTriggerName(name)
+    return nameHasAny(name, TRIGGER_TOKENS)
+end
+
+local function isBooleanTriggerName(name)
+    return nameHasAny(name, BOOLEAN_TRIGGER_TOKENS)
+end
+
+local function acquireBestTarget(snapshotMap)
+    local cameraCFrame = Camera.CFrame
+    local bestTarget = nil
+    local bestDot = Settings.TargetFovDot
+
+    for character in pairs(snapshotMap) do
+        if character ~= LocalPlayer.Character then
+            local root = getRoot(character)
+            if root then
+                local offset = root.Position - cameraCFrame.Position
+                local distance = offset.Magnitude
+                if distance <= Settings.TargetMaxDistance and distance > 0 then
+                    local dot = cameraCFrame.LookVector:Dot(offset.Unit)
+                    if dot > bestDot then
+                        bestDot = dot
+                        bestTarget = character
+                    end
+                end
+            end
+        end
+    end
+
+    return bestTarget
 end
 
 local Gui = Instance.new("ScreenGui")
-Gui.Name = "CooldownTracker_AttackedOnly"
+Gui.Name = "CooldownTracker_Rewrite"
 Gui.ResetOnSpawn = false
 Gui.IgnoreGuiInset = true
 Gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
@@ -100,7 +216,7 @@ local Panel = Instance.new("Frame")
 Panel.Name = "Panel"
 Panel.Size = Settings.PanelSize
 Panel.Position = Settings.PanelPosition
-Panel.BackgroundColor3 = Settings.Bg
+Panel.BackgroundColor3 = Settings.Background
 Panel.BorderSizePixel = 0
 Panel.Active = true
 Panel.Parent = Gui
@@ -115,27 +231,28 @@ PanelStroke.Thickness = 1
 PanelStroke.Parent = Panel
 
 local Topbar = Instance.new("Frame")
+Topbar.Name = "Topbar"
 Topbar.Size = UDim2.new(1, 0, 0, 28)
-Topbar.BackgroundColor3 = Settings.Top
+Topbar.BackgroundColor3 = Settings.Topbar
 Topbar.BorderSizePixel = 0
 Topbar.Active = true
 Topbar.Parent = Panel
 
-local TopCorner = Instance.new("UICorner")
-TopCorner.CornerRadius = UDim.new(0, 10)
-TopCorner.Parent = Topbar
+local TopbarCorner = Instance.new("UICorner")
+TopbarCorner.CornerRadius = UDim.new(0, 10)
+TopbarCorner.Parent = Topbar
 
 local TopFix = Instance.new("Frame")
+TopFix.BackgroundColor3 = Settings.Topbar
+TopFix.BorderSizePixel = 0
 TopFix.Size = UDim2.new(1, 0, 0, 10)
 TopFix.Position = UDim2.new(0, 0, 1, -10)
-TopFix.BorderSizePixel = 0
-TopFix.BackgroundColor3 = Settings.Top
 TopFix.Parent = Topbar
 
 local Title = Instance.new("TextLabel")
 Title.BackgroundTransparency = 1
-Title.Size = UDim2.new(1, -12, 1, 0)
 Title.Position = UDim2.new(0, 10, 0, 0)
+Title.Size = UDim2.new(1, -12, 1, 0)
 Title.Font = Enum.Font.GothamSemibold
 Title.TextSize = 13
 Title.TextXAlignment = Enum.TextXAlignment.Left
@@ -144,6 +261,7 @@ Title.Text = "Target Cooldowns"
 Title.Parent = Topbar
 
 local Info = Instance.new("Frame")
+Info.Name = "Info"
 Info.Size = UDim2.new(1, -12, 0, 58)
 Info.Position = UDim2.new(0, 6, 0, 34)
 Info.BackgroundColor3 = Settings.Card
@@ -167,7 +285,7 @@ Status.Size = UDim2.new(1, -16, 0, 14)
 Status.Font = Enum.Font.GothamMedium
 Status.TextSize = 11
 Status.TextXAlignment = Enum.TextXAlignment.Left
-Status.TextColor3 = Settings.Sub
+Status.TextColor3 = Settings.SubText
 Status.Text = "Look at a player and press Z to target."
 Status.Parent = Info
 
@@ -182,16 +300,16 @@ Victim.TextColor3 = Settings.Text
 Victim.Text = "Player: " .. LocalPlayer.Name
 Victim.Parent = Info
 
-local Attacker = Instance.new("TextLabel")
-Attacker.BackgroundTransparency = 1
-Attacker.Position = UDim2.new(0, 8, 0, 39)
-Attacker.Size = UDim2.new(1, -16, 0, 14)
-Attacker.Font = Enum.Font.GothamSemibold
-Attacker.TextSize = 11
-Attacker.TextXAlignment = Enum.TextXAlignment.Left
-Attacker.TextColor3 = Settings.Accent
-Attacker.Text = "Target: -"
-Attacker.Parent = Info
+local TargetLabel = Instance.new("TextLabel")
+TargetLabel.BackgroundTransparency = 1
+TargetLabel.Position = UDim2.new(0, 8, 0, 39)
+TargetLabel.Size = UDim2.new(1, -16, 0, 14)
+TargetLabel.Font = Enum.Font.GothamSemibold
+TargetLabel.TextSize = 11
+TargetLabel.TextXAlignment = Enum.TextXAlignment.Left
+TargetLabel.TextColor3 = Settings.Accent
+TargetLabel.Text = "Target: -"
+TargetLabel.Parent = Info
 
 local Holder = Instance.new("Frame")
 Holder.BackgroundTransparency = 1
@@ -205,83 +323,89 @@ Layout.Parent = Holder
 
 local Rows = {}
 
-local function NewRow(i)
-    local Row = Instance.new("Frame")
-    Row.Name = "Row_" .. i
-    Row.Size = UDim2.new(1, 0, 0, 18)
-    Row.BackgroundColor3 = Settings.Card
-    Row.BorderSizePixel = 0
-    Row.Visible = false
-    Row.Parent = Holder
+local function newRow(i)
+    local row = Instance.new("Frame")
+    row.Name = "Row_" .. i
+    row.Size = UDim2.new(1, 0, 0, 18)
+    row.BackgroundColor3 = Settings.Card
+    row.BorderSizePixel = 0
+    row.Visible = false
+    row.Parent = Holder
 
-    local RowCorner = Instance.new("UICorner")
-    RowCorner.CornerRadius = UDim.new(0, 7)
-    RowCorner.Parent = Row
+    local rowCorner = Instance.new("UICorner")
+    rowCorner.CornerRadius = UDim.new(0, 7)
+    rowCorner.Parent = row
 
-    local RowStroke = Instance.new("UIStroke")
-    RowStroke.Color = Settings.Stroke
-    RowStroke.Thickness = 1
-    RowStroke.Transparency = 0.4
-    RowStroke.Parent = Row
+    local rowStroke = Instance.new("UIStroke")
+    rowStroke.Color = Settings.Stroke
+    rowStroke.Thickness = 1
+    rowStroke.Transparency = 0.4
+    rowStroke.Parent = row
 
-    local Label = Instance.new("TextLabel")
-    Label.Name = "Label"
-    Label.BackgroundTransparency = 1
-    Label.Position = UDim2.new(0, 8, 0, 0)
-    Label.Size = UDim2.new(1, -60, 1, 0)
-    Label.Font = Enum.Font.GothamMedium
-    Label.TextSize = 10
-    Label.TextXAlignment = Enum.TextXAlignment.Left
-    Label.TextColor3 = Settings.Text
-    Label.Text = ""
-    Label.Parent = Row
+    local label = Instance.new("TextLabel")
+    label.Name = "Label"
+    label.BackgroundTransparency = 1
+    label.Position = UDim2.new(0, 8, 0, 0)
+    label.Size = UDim2.new(1, -60, 1, 0)
+    label.Font = Enum.Font.GothamMedium
+    label.TextSize = 10
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.TextColor3 = Settings.Text
+    label.Text = ""
+    label.Parent = row
 
-    local Time = Instance.new("TextLabel")
-    Time.Name = "Time"
-    Time.BackgroundTransparency = 1
-    Time.Position = UDim2.new(1, -46, 0, 0)
-    Time.Size = UDim2.new(0, 38, 1, 0)
-    Time.Font = Enum.Font.Code
-    Time.TextSize = 10
-    Time.TextXAlignment = Enum.TextXAlignment.Right
-    Time.TextColor3 = Settings.Sub
-    Time.Text = ""
-    Time.Parent = Row
+    local time = Instance.new("TextLabel")
+    time.Name = "Time"
+    time.BackgroundTransparency = 1
+    time.Position = UDim2.new(1, -46, 0, 0)
+    time.Size = UDim2.new(0, 38, 1, 0)
+    time.Font = Enum.Font.Code
+    time.TextSize = 10
+    time.TextXAlignment = Enum.TextXAlignment.Right
+    time.TextColor3 = Settings.SubText
+    time.Text = ""
+    time.Parent = row
 
-    local BarBack = Instance.new("Frame")
-    BarBack.Name = "BarBack"
-    BarBack.Position = UDim2.new(0, 0, 1, -3)
-    BarBack.Size = UDim2.new(1, 0, 0, 3)
-    BarBack.BorderSizePixel = 0
-    BarBack.BackgroundColor3 = Settings.BarBack
-    BarBack.Parent = Row
+    local barBack = Instance.new("Frame")
+    barBack.Name = "BarBack"
+    barBack.Position = UDim2.new(0, 0, 1, -3)
+    barBack.Size = UDim2.new(1, 0, 0, 3)
+    barBack.BorderSizePixel = 0
+    barBack.BackgroundColor3 = Settings.BarBack
+    barBack.Parent = row
 
-    local BBCorner = Instance.new("UICorner")
-    BBCorner.CornerRadius = UDim.new(1, 0)
-    BBCorner.Parent = BarBack
+    local backCorner = Instance.new("UICorner")
+    backCorner.CornerRadius = UDim.new(1, 0)
+    backCorner.Parent = barBack
 
-    local Fill = Instance.new("Frame")
-    Fill.Name = "Fill"
-    Fill.Size = UDim2.new(0, 0, 1, 0)
-    Fill.BorderSizePixel = 0
-    Fill.BackgroundColor3 = Settings.BarFill
-    Fill.Parent = BarBack
+    local fill = Instance.new("Frame")
+    fill.Name = "Fill"
+    fill.Size = UDim2.new(0, 0, 1, 0)
+    fill.BorderSizePixel = 0
+    fill.BackgroundColor3 = Settings.BarFill
+    fill.Parent = barBack
 
-    local FillCorner = Instance.new("UICorner")
-    FillCorner.CornerRadius = UDim.new(1, 0)
-    FillCorner.Parent = Fill
+    local fillCorner = Instance.new("UICorner")
+    fillCorner.CornerRadius = UDim.new(1, 0)
+    fillCorner.Parent = fill
 
-    return Row
+    return row
 end
 
 for i = 1, Settings.MaxRows do
-    Rows[i] = NewRow(i)
+    Rows[i] = newRow(i)
 end
 
 local dragging = false
-local dragInput, dragStart, startPos
+local dragInput = nil
+local dragStart = nil
+local startPos = nil
 
 local function updateDrag(input)
+    if not dragStart or not startPos then
+        return
+    end
+
     local delta = input.Position - dragStart
     Panel.Position = UDim2.new(
         startPos.X.Scale,
@@ -319,9 +443,9 @@ end)
 
 local MoveStates = {}
 local Snapshots = {}
-local ActiveAttacker = nil
+local LockedTarget = nil
 
-local function HideRows()
+local function hideRows()
     for _, row in ipairs(Rows) do
         row.Visible = false
         row.Label.Text = ""
@@ -330,156 +454,246 @@ local function HideRows()
     end
 end
 
-local function BuildSnapshot(character, now)
-    local humanoid = GetHumanoid(character)
-    local root = GetRoot(character)
+local function resetMoveState(moveState, valueNow)
+    moveState.StartedAt = 0
+    moveState.LastValue = valueNow
+end
+
+local function evaluateNumericField(fieldName, value, moveState)
+    if value == nil or value <= 0 then
+        return nil, nil, false
+    end
+
+    local remaining = nil
+    local maxCooldown = nil
+    local triggered = false
+
+    if isStrongRemainingName(fieldName) then
+        remaining = value
+        maxCooldown = value
+    elseif isBaseCooldownName(fieldName) then
+        maxCooldown = value
+    elseif isWeakTimerName(fieldName) then
+        if moveState.MaxCooldown > 0 then
+            if value <= moveState.MaxCooldown + 0.25 then
+                remaining = value
+            else
+                maxCooldown = value
+            end
+        else
+            remaining = value
+            maxCooldown = value
+        end
+    elseif isTriggerName(fieldName) then
+        triggered = true
+    end
+
+    return remaining, maxCooldown, triggered
+end
+
+local function updateFromValue(moveInstance, moveState, now)
+    local valueNow = clampNumber(moveInstance.Value, 0) or 0
+    local valueRemaining = nil
+    local started = false
+
+    if moveState.LastValue == nil then
+        moveState.LastValue = valueNow
+    elseif valueNow ~= moveState.LastValue then
+        if valueNow > moveState.LastValue then
+            moveState.MaxCooldown = math.max(moveState.MaxCooldown, valueNow)
+            moveState.StartedAt = now
+            started = true
+        elseif valueNow > 0 and moveState.MaxCooldown > 0 and valueNow <= moveState.MaxCooldown + 0.25 then
+            valueRemaining = valueNow
+            moveState.StartedAt = now - math.max(0, moveState.MaxCooldown - valueNow)
+        elseif valueNow <= 0 then
+            resetMoveState(moveState, valueNow)
+        end
+
+        moveState.LastValue = valueNow
+    end
+
+    if valueNow > moveState.MaxCooldown then
+        moveState.MaxCooldown = valueNow
+    end
+
+    return valueNow, valueRemaining, started
+end
+
+local function scanAttributes(moveInstance, moveState, now)
+    local remaining = nil
+    local maxCooldown = nil
+    local triggered = false
+
+    for attrName, rawValue in pairs(moveInstance:GetAttributes()) do
+        local numericValue = clampNumber(rawValue, nil)
+        local oldValue = moveState.AttrCache[attrName]
+
+        if numericValue ~= nil then
+            local fieldRemaining, fieldMax, fieldTriggered = evaluateNumericField(attrName, numericValue, moveState)
+
+            if fieldRemaining and (remaining == nil or fieldRemaining > remaining) then
+                remaining = fieldRemaining
+            end
+
+            if fieldMax and (maxCooldown == nil or fieldMax > maxCooldown) then
+                maxCooldown = fieldMax
+            end
+
+            if oldValue ~= rawValue and fieldTriggered then
+                triggered = true
+                moveState.StartedAt = now
+            end
+        elseif type(rawValue) == "boolean" then
+            if oldValue ~= rawValue and rawValue == true and isBooleanTriggerName(attrName) then
+                triggered = true
+                moveState.StartedAt = now
+            end
+        end
+
+        moveState.AttrCache[attrName] = rawValue
+    end
+
+    return remaining, maxCooldown, triggered
+end
+
+local function scanChildren(moveInstance, moveState, now)
+    local remaining = nil
+    local maxCooldown = nil
+    local triggered = false
+
+    for _, child in ipairs(moveInstance:GetChildren()) do
+        local childName = child.Name
+
+        if child:IsA("NumberValue") or child:IsA("IntValue") then
+            local numericValue = clampNumber(child.Value, nil)
+            if numericValue ~= nil then
+                local oldValue = moveState.ChildCache[childName]
+                local fieldRemaining, fieldMax, fieldTriggered = evaluateNumericField(childName, numericValue, moveState)
+
+                if fieldRemaining and (remaining == nil or fieldRemaining > remaining) then
+                    remaining = fieldRemaining
+                end
+
+                if fieldMax and (maxCooldown == nil or fieldMax > maxCooldown) then
+                    maxCooldown = fieldMax
+                end
+
+                if oldValue ~= numericValue and fieldTriggered then
+                    triggered = true
+                    moveState.StartedAt = now
+                end
+
+                moveState.ChildCache[childName] = numericValue
+            end
+        elseif child:IsA("BoolValue") then
+            local oldValue = moveState.ChildCache[childName]
+            if oldValue ~= child.Value and child.Value == true and isBooleanTriggerName(childName) then
+                triggered = true
+                moveState.StartedAt = now
+            end
+            moveState.ChildCache[childName] = child.Value
+        end
+    end
+
+    return remaining, maxCooldown, triggered
+end
+
+local function buildMoveEntry(moveInstance, key, moveState, now)
+    local _, valueRemaining = updateFromValue(moveInstance, moveState, now)
+
+    local attrRemaining, attrMax = scanAttributes(moveInstance, moveState, now)
+    local childRemaining, childMax = scanChildren(moveInstance, moveState, now)
+
+    local remaining = nil
+
+    if attrMax then
+        moveState.MaxCooldown = math.max(moveState.MaxCooldown, attrMax)
+    end
+
+    if childMax then
+        moveState.MaxCooldown = math.max(moveState.MaxCooldown, childMax)
+    end
+
+    if attrRemaining ~= nil then
+        remaining = attrRemaining
+        moveState.MaxCooldown = math.max(moveState.MaxCooldown, attrRemaining)
+        moveState.StartedAt = now - math.max(0, moveState.MaxCooldown - attrRemaining)
+    elseif childRemaining ~= nil then
+        remaining = childRemaining
+        moveState.MaxCooldown = math.max(moveState.MaxCooldown, childRemaining)
+        moveState.StartedAt = now - math.max(0, moveState.MaxCooldown - childRemaining)
+    elseif valueRemaining ~= nil then
+        remaining = valueRemaining
+    end
+
+    if remaining == nil and moveState.StartedAt > 0 and moveState.MaxCooldown > 0 then
+        local elapsed = now - moveState.StartedAt
+        if elapsed < moveState.MaxCooldown then
+            remaining = moveState.MaxCooldown - elapsed
+        else
+            moveState.StartedAt = 0
+            remaining = 0
+        end
+    end
+
+    remaining = math.max(0, clampNumber(remaining, 0) or 0)
+
+    if remaining <= 0 then
+        return nil
+    end
+
+    local cooldown = math.max(moveState.MaxCooldown, remaining, 0.01)
+
+    moveState.Key = key
+
+    return {
+        Name = moveInstance.Name,
+        Key = key,
+        Cooldown = cooldown,
+        Remaining = remaining,
+    }
+end
+
+local function buildSnapshot(character, now)
+    local humanoid = getHumanoid(character)
+    local root = getRoot(character)
+
     if not humanoid or not root or humanoid.Health <= 0 then
         return nil
     end
 
     local moveset = character:FindFirstChild("Moveset")
     local charState = MoveStates[character] or {}
-    local moves = {}
+    local activeMoves = {}
 
     if moveset then
         for idx, moveInstance in ipairs(moveset:GetChildren()) do
-            local key = tonumber(GetAttribute(moveInstance, "Key", idx)) or idx
-            local val = tonumber(moveInstance.Value) or 0
-            
-            local state = charState[moveInstance.Name] or {
-    MaxCooldown = math.max(val, 0),
-    LastVal = nil,
-    TimeStarted = 0,
-    Key = key,
-    AttrCache = {}
-}
+            local key = tonumber(getAttribute(moveInstance, "Key", idx)) or idx
 
--- Update MaxCooldown if the value is permanently larger
-if val > state.MaxCooldown then
-    state.MaxCooldown = val
-end
-
-local remaining = 0
-local cooldown = state.MaxCooldown
-
--- Only treat Value as a live cooldown if it is actually changing
-if val ~= state.LastVal then
-    if val < state.LastVal and val > 0 then
-        -- Value is ticking down
-        state.TimeStarted = now - (state.MaxCooldown - val)
-    elseif val > state.LastVal then
-        -- Cooldown restarted/refreshed
-        state.TimeStarted = now
-        state.MaxCooldown = val
-        cooldown = val
-    end
-    state.LastVal = val
-end
-
-            -- Method 2: Check for any Attributes dynamically changing
-local attrs = moveInstance:GetAttributes()
-for attrName, attrVal in pairs(attrs) do
-    local lowerName = attrName:lower()
-    local lastAttr = state.AttrCache[attrName]
-
-    if type(attrVal) == "number" then
-        -- Treat plain "cooldown" as base/max cooldown, not live remaining
-        if lowerName:match("cooldown")
-            and not lowerName:match("remain")
-            and not lowerName:match("left")
-            and not lowerName:match("time")
-            and not lowerName:match("tick") then
-
-            if attrVal > state.MaxCooldown then
-                state.MaxCooldown = attrVal
+            local moveState = charState[moveInstance.Name]
+            if not moveState then
+                moveState = {
+                    MaxCooldown = math.max(clampNumber(moveInstance.Value, 0) or 0, 0),
+                    LastValue = nil,
+                    StartedAt = 0,
+                    Key = key,
+                    AttrCache = {},
+                    ChildCache = {},
+                }
+                charState[moveInstance.Name] = moveState
             end
-            cooldown = math.max(cooldown, state.MaxCooldown)
-        end
 
-        -- Treat remain/left/time/tick as live remaining cooldown
-        if lowerName:match("remain") or lowerName:match("left") or lowerName:match("time") or lowerName:match("tick") then
-            if attrVal > 0 then
-                remaining = attrVal
-
-                if attrVal > state.MaxCooldown then
-                    state.MaxCooldown = attrVal
-                end
-                cooldown = math.max(cooldown, state.MaxCooldown)
-
-                if lastAttr ~= attrVal then
-                    if lastAttr and attrVal < lastAttr then
-                        state.TimeStarted = now - math.max(0, state.MaxCooldown - attrVal)
-                    else
-                        state.TimeStarted = now
-                    end
-                end
-            end
-        elseif lastAttr ~= attrVal then
-            if lowerName:match("last") or lowerName:match("start") or lowerName:match("use") then
-                state.TimeStarted = now
+            local entry = buildMoveEntry(moveInstance, key, moveState, now)
+            if entry then
+                table.insert(activeMoves, entry)
             end
         end
 
-    elseif type(attrVal) == "boolean" then
-        if lastAttr ~= attrVal then
-            if attrVal == true and (lowerName:match("cooldown") or lowerName:match("cd") or lowerName:match("active") or lowerName:match("used")) then
-                state.TimeStarted = now
+        table.sort(activeMoves, function(a, b)
+            if a.Key == b.Key then
+                return a.Name < b.Name
             end
-        end
-    end
-
-    state.AttrCache[attrName] = attrVal
-end
-
--- Method 3: Check for Child Values tracking cooldowns dynamically
-for _, child in ipairs(moveInstance:GetChildren()) do
-    if child:IsA("NumberValue") or child:IsA("IntValue") then
-        local childName = child.Name:lower()
-        local cVal = tonumber(child.Value) or 0
-
-        -- remain/left/time/tick = live remaining cooldown
-        if childName:match("remain") or childName:match("left") or childName:match("time") or childName:match("tick") then
-            if cVal > 0 then
-                remaining = cVal
-
-                if cVal > state.MaxCooldown then
-                    state.MaxCooldown = cVal
-                end
-                cooldown = math.max(cooldown, state.MaxCooldown)
-            end
-
-        -- cooldown = base/max cooldown
-        elseif childName:match("cooldown") then
-            if cVal > state.MaxCooldown then
-                state.MaxCooldown = cVal
-            end
-            cooldown = math.max(cooldown, state.MaxCooldown)
-        end
-    end
-end
-
--- If Value itself looks like the live remaining timer, use it only when we already
--- know the max cooldown is larger than the current value.
-if remaining == 0 and val > 0 and state.MaxCooldown > val then
-    remaining = val
-    state.TimeStarted = now - math.max(0, state.MaxCooldown - val)
-end
-
-            -- Prevent UI errors if a move has no inherent cooldown configuration
-            if cooldown <= 0 then cooldown = 1 end
-
-            state.Key = key
-            charState[moveInstance.Name] = state
-
-            table.insert(moves, {
-                Name = moveInstance.Name,
-                Key = key,
-                Cooldown = cooldown,
-                Remaining = remaining,
-            })
-        end
-
-        table.sort(moves, function(a, b)
             return a.Key < b.Key
         end)
     end
@@ -488,19 +702,19 @@ end
 
     return {
         Character = character,
-        Label = CharacterLabel(character),
+        Label = characterLabel(character),
         RootPosition = root.Position,
-        Moves = moves,
+        Moves = activeMoves,
     }
 end
 
-local function RefreshSnapshots(now)
+local function refreshSnapshots(now)
     local valid = {}
 
-    for _, character in ipairs(GetCharacters()) do
-        local snap = BuildSnapshot(character, now)
-        if snap then
-            Snapshots[character] = snap
+    for _, character in ipairs(getCharacters()) do
+        local snapshot = buildSnapshot(character, now)
+        if snapshot then
+            Snapshots[character] = snapshot
             valid[character] = true
         end
     end
@@ -509,37 +723,43 @@ local function RefreshSnapshots(now)
         if not valid[character] then
             Snapshots[character] = nil
             MoveStates[character] = nil
-            if ActiveAttacker == character then
-                ActiveAttacker = nil
+            if LockedTarget == character then
+                LockedTarget = nil
             end
         end
     end
 end
 
-local function RenderSnapshot(snapshot)
+local function renderSnapshot(snapshot)
     if not snapshot then
-        Attacker.Text = "Target: -"
+        TargetLabel.Text = "Target: -"
         Status.Text = "Look at a player and press Z to target."
-        HideRows()
+        hideRows()
         return
     end
 
-    Attacker.Text = "Target: " .. snapshot.Label
-    Status.Text = "Tracking target cooldowns..."
+    TargetLabel.Text = "Target: " .. snapshot.Label
+
+    if #snapshot.Moves > 0 then
+        Status.Text = "Tracking target cooldowns... Press Z again to clear."
+    else
+        Status.Text = "Locked on target. No active cooldowns found."
+    end
 
     for i, row in ipairs(Rows) do
         local move = snapshot.Moves[i]
+
         if move then
             row.Visible = true
             row.Label.Text = move.Name
+            row.Time.Text = string.format("%.1f", move.Remaining)
 
-            if move.Remaining > 0 and move.Cooldown > 0 then
-                row.Time.Text = string.format("%.1f", move.Remaining)
-                row.BarBack.Fill.Size = UDim2.new(math.clamp(move.Remaining / move.Cooldown, 0, 1), 0, 1, 0)
-            else
-                row.Time.Text = ""
-                row.BarBack.Fill.Size = UDim2.new(0, 0, 1, 0)
+            local ratio = 0
+            if move.Cooldown > 0 then
+                ratio = math.clamp(move.Remaining / move.Cooldown, 0, 1)
             end
+
+            row.BarBack.Fill.Size = UDim2.new(ratio, 0, 1, 0)
         else
             row.Visible = false
             row.Label.Text = ""
@@ -549,51 +769,25 @@ local function RenderSnapshot(snapshot)
     end
 end
 
-local TARGET_MAX_DISTANCE = 200
-local TARGET_FOV_DOT = 0.85 -- Controls the crosshair forgiveness. 1 is perfectly centered, 0.85 is a slight cone.
-
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed or input.KeyCode ~= Enum.KeyCode.Z then
         return
     end
 
-    -- Press Z again to clear the current locked target
-    if ActiveAttacker then
-        ActiveAttacker = nil
+    if LockedTarget then
+        LockedTarget = nil
         Status.Text = "Target cleared. Look at a player and press Z to target."
-        RenderSnapshot(nil)
+        renderSnapshot(nil)
         return
     end
 
-    local bestTarget = nil
-    local bestDot = TARGET_FOV_DOT
-    local camCFrame = Camera.CFrame
-
-    for character, _ in pairs(Snapshots) do
-        if character ~= LocalPlayer.Character then
-            local root = GetRoot(character)
-            if root then
-                local dist = (root.Position - camCFrame.Position).Magnitude
-                if dist <= TARGET_MAX_DISTANCE then
-                    local dir = (root.Position - camCFrame.Position).Unit
-                    local dot = camCFrame.LookVector:Dot(dir)
-
-                    if dot > bestDot then
-                        bestDot = dot
-                        bestTarget = character
-                    end
-                end
-            end
-        end
-    end
-
-    if bestTarget then
-        ActiveAttacker = bestTarget
-        Status.Text = "Tracking target cooldowns... Press Z again to clear."
-        RenderSnapshot(Snapshots[bestTarget])
+    local target = acquireBestTarget(Snapshots)
+    if target then
+        LockedTarget = target
+        renderSnapshot(Snapshots[target])
     else
         Status.Text = "No target found in front of you."
-        RenderSnapshot(nil)
+        renderSnapshot(nil)
     end
 end)
 
@@ -605,22 +799,23 @@ LocalPlayer.CharacterAdded:Connect(function()
     Victim.Text = "Player: " .. LocalPlayer.Name
 end)
 
-HideRows()
-print("[CooldownTracker] Loaded with Manual Z Targeting")
+hideRows()
+print("[CooldownTracker] Rewritten tracker loaded.")
 
 RunService.RenderStepped:Connect(function()
     local now = tick()
-    RefreshSnapshots(now)
 
-    if ActiveAttacker then
-        local snapshot = Snapshots[ActiveAttacker]
+    refreshSnapshots(now)
+
+    if LockedTarget then
+        local snapshot = Snapshots[LockedTarget]
         if snapshot then
-            RenderSnapshot(snapshot)
+            renderSnapshot(snapshot)
         else
-            ActiveAttacker = nil
-            RenderSnapshot(nil)
+            LockedTarget = nil
+            renderSnapshot(nil)
         end
     else
-        RenderSnapshot(nil)
+        renderSnapshot(nil)
     end
 end)
